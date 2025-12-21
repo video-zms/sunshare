@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   Type, Image as ImageIcon, Video as VideoIcon, FileSearch, Edit, Mic2,
   Loader2, Plus, Download, Maximize2, Copy, Wand2, Scaling, Monitor,
-  Layers, ChevronDown, AlertCircle, Play, Pause, Upload, X, BookOpen, Film, Sparkles
+  Layers, ChevronDown, AlertCircle, Play, Pause, Upload, X, BookOpen, Film, Sparkles, Eye
 } from 'lucide-vue-next'
 import { NodeType, NodeStatus, type AppNode, type InputAsset, type VideoGenerationMode } from '../types'
 
@@ -41,6 +41,7 @@ const emit = defineEmits<{
   resizeMouseDown: [e: MouseEvent, id: string, width: number, height: number]
   inputReorder: [nodeId: string, newOrder: string[]]
   generateStoryShots: [id: string]
+  viewStoryboard: [id: string]
 }>()
 
 // Constants
@@ -322,6 +323,14 @@ const handleInputResizeStart = (e: MouseEvent) => {
   window.addEventListener('mouseup', handleUp)
 }
 
+const copyToClipboard = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (err) {
+    console.error('复制失败:', err)
+  }
+}
+
 // Cleanup
 onUnmounted(() => {
   if (videoBlobUrl.value && !videoBlobUrl.value.startsWith('data:')) {
@@ -501,7 +510,7 @@ onUnmounted(() => {
               <button
                 v-if="node.data.analysis"
                 class="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 border border-white/10 rounded-md text-slate-400 hover:text-white transition-all opacity-0 group-hover/analysis:opacity-100 backdrop-blur-md z-10"
-                @click.stop="navigator.clipboard.writeText(node.data.analysis || '')"
+                @click.stop="copyToClipboard(node.data.analysis || '')"
                 title="复制全部"
               >
                 <Copy :size="12" />
@@ -604,7 +613,7 @@ onUnmounted(() => {
               <button
                 v-if="node.data.story"
                 class="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 border border-white/10 rounded-md text-slate-400 hover:text-white transition-all opacity-0 group-hover/content:opacity-100 backdrop-blur-md z-10"
-                @click.stop="navigator.clipboard.writeText(node.data.story || '')"
+                @click.stop="copyToClipboard(node.data.story || '')"
                 title="复制全部"
               >
                 <Copy :size="12" />
@@ -612,7 +621,7 @@ onUnmounted(() => {
             </div>
 
             <!-- Generate Storyboard Button -->
-            <div v-if="node.data.story" class="mt-3 z-10">
+            <div v-if="node.data.story" class="mt-3 z-10 flex flex-col gap-2">
               <button
                 @click.stop="emit('generateStoryShots', node.id)"
                 :disabled="isWorking"
@@ -621,6 +630,17 @@ onUnmounted(() => {
                 <Film :size="14" />
                 <span>生成故事分镜</span>
                 <Sparkles :size="12" class="text-orange-400" />
+              </button>
+              
+              <!-- View Storyboard Button -->
+              <button
+                v-if="node.data.storyShots && node.data.storyShots.length > 0"
+                @click.stop="emit('viewStoryboard', node.id)"
+                class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500/20 to-blue-500/20 hover:from-cyan-500/30 hover:to-blue-500/30 border border-cyan-500/30 text-cyan-300 text-xs font-bold transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <Eye :size="14" />
+                <span>查看现有分镜</span>
+                <span class="px-1.5 py-0.5 bg-cyan-500/30 rounded text-[10px]">{{ node.data.storyShots.length }}</span>
               </button>
             </div>
 

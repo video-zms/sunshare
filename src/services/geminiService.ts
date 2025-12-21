@@ -1,7 +1,31 @@
 import { GoogleGenAI, Modality, Part } from "@google/genai"
 import type { SmartSequenceItem, VideoGenerationMode } from "../types"
+import * as llmService from "./llmService"
 
-// --- Initialization ---
+// --- Re-export LLM Service for unified access ---
+export { 
+  sendChatMessage as sendLLMChatMessage,
+  sendJsonRequest,
+  streamChatMessage,
+  getCurrentProvider,
+  getCurrentModel,
+  saveConfig as saveLLMConfig,
+  getConfig as getLLMConfig,
+  clearModelCache,
+  getImageGenConfig,
+  saveImageGenConfig,
+  getImageGenApiKey,
+  getVideoGenConfig,
+  saveVideoGenConfig,
+  getVideoGenApiKey,
+  getSoraVideoGenConfig,
+  saveSoraVideoGenConfig,
+  getSoraVideoGenApiKey
+} from "./llmService"
+
+import { getImageGenApiKey, getVideoGenApiKey, getSoraVideoGenApiKey, getSoraVideoGenConfig } from "./llmService"
+
+// --- Gemini Client Initialization (for multimodal features) ---
 
 const getApiKey = () => {
   const apiKey = import.meta.env.VITE_API_KEY || (window as any).process?.env?.API_KEY
@@ -15,9 +39,43 @@ const getBaseUrl = () => {
   return import.meta.env.VITE_API_BASE_URL || undefined
 }
 
-const getClient = () => {
+const getGeminiClient = () => {
   const apiKey = getApiKey()
   const baseUrl = getBaseUrl()
+  
+  const config: { apiKey: string; httpOptions?: { baseUrl: string } } = { apiKey }
+  
+  if (baseUrl) {
+    config.httpOptions = { baseUrl }
+  }
+  
+  return new GoogleGenAI(config)
+}
+
+// 获取用于图片生成的 Gemini 客户端（可能使用不同的 API Key）
+const getImageGenGeminiClient = () => {
+  const { apiKey, baseUrl } = getImageGenApiKey()
+  
+  if (!apiKey) {
+    throw new Error("Image Generation API Key is missing. Please configure it in Settings.")
+  }
+  
+  const config: { apiKey: string; httpOptions?: { baseUrl: string } } = { apiKey }
+  
+  if (baseUrl) {
+    config.httpOptions = { baseUrl }
+  }
+  
+  return new GoogleGenAI(config)
+}
+
+// 获取用于视频生成的 Gemini 客户端（可能使用不同的 API Key）
+const getVideoGenGeminiClient = () => {
+  const { apiKey, baseUrl } = getVideoGenApiKey()
+  
+  if (!apiKey) {
+    throw new Error("Video Generation API Key is missing. Please configure it in Settings.")
+  }
   
   const config: { apiKey: string; httpOptions?: { baseUrl: string } } = { apiKey }
   
@@ -248,30 +306,48 @@ const STORY_GENERATOR_INSTRUCTION = `
 `
 
 const STORY_TO_SHOTS_INSTRUCTION = `
-你是一位专业的分镜师和视觉叙事专家。你的任务是将故事拆分成详细的分镜列表。
+你是一位专业的分镜师和视觉叙事专家。你的任务是将故事拆分成详细的分镜列表，同时提取故事中的场景和人物信息。
 
-对于每个分镜，你需要提供：
-1. shotNumber: 镜头编号
-2. duration: 预估时长（秒）
-3. sceneType: 景别（远景/全景/中景/近景/特写/大特写）
-4. cameraMovement: 运镜方式（固定/横摇/俯仰/横移/升降/跟随/推/拉/摇/移/环绕）
-5. description: 画面描述（详细描述这个镜头要呈现的内容）
-6. dialogue: 台词（如果有的话）
-7. notes: 备注（拍摄要点、情绪氛围等）
+输出格式要求（严格的 JSON 对象，不要包含任何 markdown 标记）：
 
-输出严格的 JSON 数组格式，不要包含任何 markdown 标记。
-示例格式：
-[
-  {
-    "shotNumber": 1,
-    "duration": 3,
-    "sceneType": "远景",
-    "cameraMovement": "横移",
-    "description": "城市夜景，霓虹灯闪烁...",
-    "dialogue": "",
-    "notes": "营造孤独感"
-  }
-]
+{
+  "scenes": [
+    {
+      "id": "scene-1",
+      "name": "场景名称",
+      "description": "场景的详细描述"
+    }
+  ],
+  "characters": [
+    {
+      "id": "char-1", 
+      "name": "角色名称",
+      "description": "角色的外貌、性格特点描述"
+    }
+  ],
+  "shots": [
+    {
+      "shotNumber": 1,
+      "duration": 3,
+      "sceneType": "远景",
+      "cameraMovement": "横移",
+      "description": "画面描述...",
+      "dialogue": "台词内容",
+      "notes": "拍摄要点",
+      "sceneId": "scene-1",
+      "characterIds": ["char-1", "char-2"]
+    }
+  ]
+}
+
+说明：
+1. scenes: 从故事中提取所有出现的场景/地点
+2. characters: 从故事中提取所有出现的角色人物
+3. shots: 分镜列表，每个分镜关联对应的场景和人物
+   - sceneId: 该分镜所在的场景ID
+   - characterIds: 该分镜中出现的人物ID数组
+4. sceneType 可选值：远景/全景/中景/近景/特写/大特写
+5. cameraMovement 可选值：固定/横摇/俯仰/横移/升降/跟随/推/拉/摇/移/环绕
 `
 
 const HELP_ME_WRITE_INSTRUCTION = `
@@ -366,35 +442,29 @@ const HELP_ME_WRITE_INSTRUCTION = `
 
 // --- API Functions ---
 
+/**
+ * 发送聊天消息 - 使用 LangChain 多模型服务
+ * 支持 Gemini, OpenAI, Anthropic, DeepSeek 等多种模型
+ */
 export const sendChatMessage = async (
   history: { role: 'user' | 'model', parts: { text: string }[] }[],
   newMessage: string,
   options?: { isThinkingMode?: boolean, isStoryboard?: boolean, isHelpMeWrite?: boolean }
 ): Promise<string> => {
-  const ai = getClient()
-
-  // Model Selection
-  let modelName = 'gemini-2.5-flash'
-  let systemInstruction = SYSTEM_INSTRUCTION
-
-  if (options?.isThinkingMode) {
-    modelName = 'gemini-2.5-flash'
-  }
+  // 根据选项确定系统提示
+  let systemPrompt = SYSTEM_INSTRUCTION
 
   if (options?.isStoryboard) {
-    systemInstruction = STORYBOARD_INSTRUCTION
+    systemPrompt = STORYBOARD_INSTRUCTION
   } else if (options?.isHelpMeWrite) {
-    systemInstruction = HELP_ME_WRITE_INSTRUCTION
+    systemPrompt = HELP_ME_WRITE_INSTRUCTION
   }
 
-  const chat = ai.chats.create({
-    model: modelName,
-    config: { systemInstruction },
-    history: history
+  // 使用 LangChain 服务发送消息
+  return llmService.sendChatMessage(history, newMessage, {
+    systemPrompt,
+    isThinkingMode: options?.isThinkingMode
   })
-
-  const result = await chat.sendMessage({ message: newMessage })
-  return result.text || "No response"
 }
 
 export const generateImageFromText = async (
@@ -403,7 +473,8 @@ export const generateImageFromText = async (
   inputImages: string[] = [],
   options: { aspectRatio?: string, resolution?: string, count?: number } = {}
 ): Promise<string[]> => {
-  const ai = getClient()
+  // 使用图片生成专用的 API Key（如果配置了的话）
+  const ai = getImageGenGeminiClient()
   const count = options.count || 1
 
   // Fallback/Correction for model names
@@ -458,7 +529,8 @@ export const generateVideo = async (
   videoInput?: any,
   referenceImages?: string[]
 ): Promise<{ uri: string, isFallbackImage?: boolean, videoMetadata?: any, uris?: string[] }> => {
-  const ai = getClient()
+  // 使用视频生成专用的 API Key（如果配置了的话）
+  const ai = getVideoGenGeminiClient()
 
   // --- Quality Optimization ---
   const qualitySuffix = ", cinematic lighting, highly detailed, photorealistic, 4k, smooth motion, professional color grading"
@@ -575,7 +647,7 @@ export const generateVideo = async (
 }
 
 export const analyzeVideo = async (videoBase64OrUrl: string, prompt: string, model: string): Promise<string> => {
-  const ai = getClient()
+  const ai = getGeminiClient()
   let inlineData: any = null
 
   if (videoBase64OrUrl.startsWith('data:')) {
@@ -605,29 +677,296 @@ export const editImageWithText = async (imageBase64: string, prompt: string, mod
 }
 
 export const planStoryboard = async (prompt: string, context: string): Promise<string[]> => {
-  const ai = getClient()
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    config: {
-      responseMimeType: 'application/json',
-      systemInstruction: STORYBOARD_INSTRUCTION
-    },
-    contents: { parts: [{ text: `Context: ${context}\n\nUser Idea: ${prompt}` }] }
-  })
-
   try {
-    return JSON.parse(response.text || "[]")
+    const result = await llmService.sendJsonRequest(
+      `Context: ${context}\n\nUser Idea: ${prompt}`,
+      STORYBOARD_INSTRUCTION
+    )
+    return Array.isArray(result) ? result : []
   } catch {
     return []
   }
+}
+
+// 批量生成图片的接口
+export interface BatchImageGenerationItem {
+  id: string
+  type: 'scene' | 'character'
+  name: string
+  description: string
+}
+
+export interface BatchImageGenerationResult {
+  id: string
+  success: boolean
+  image?: string
+  error?: string
+}
+
+// 生成分镜图片（结合场景、人物、道具和分镜描述）
+export const generateShotImage = async (
+  shotDescription: string,
+  sceneInfo?: { name: string, description: string },
+  characters?: Array<{ name: string, description: string }>,
+  shotType?: string,
+  cameraMovement?: string,
+  artStyle: { promptSuffix: string, name?: string, id?: string } = { promptSuffix: '' },
+  model: string = 'gemini-2.5-flash-image',
+  props?: Array<{ name: string, description: string }>
+): Promise<string> => {
+  // 构建风格一致性描述
+  const getStyleConsistencyPrompt = (styleId?: string, styleName?: string) => {
+    const styleReferences: Record<string, string> = {
+      'anime': 'in reference to Japanese anime style, maintaining consistent animation aesthetics, inspired by Studio Ghibli and Makoto Shinkai works',
+      'realistic': 'in reference to photorealistic photography style, maintaining consistent photographic aesthetics and color grading',
+      'cartoon': 'in reference to cartoon illustration style, maintaining consistent cartoon aesthetics and color palette',
+      'oil-painting': 'in reference to classical oil painting style, maintaining consistent painting techniques and color application',
+      'watercolor': 'in reference to watercolor painting style, maintaining consistent transparency and color blending',
+      'pixel-art': 'in reference to pixel art style, maintaining consistent pixel aesthetics and retro feel',
+      'cyberpunk': 'in reference to cyberpunk style, maintaining consistent futuristic atmosphere and neon aesthetics',
+      'ink-wash': 'in reference to Chinese ink wash painting style, maintaining consistent ink gradation and artistic conception',
+      '3d-render': 'in reference to 3D rendering style, maintaining consistent rendering quality and lighting effects',
+      'comic': 'in reference to comic book style, maintaining consistent line art and panel composition'
+    }
+    
+    const reference = styleId && styleReferences[styleId] 
+      ? styleReferences[styleId] 
+      : styleName 
+        ? `in reference to ${styleName} style, maintaining consistent visual aesthetics and artistic style`
+        : 'maintaining consistent visual style and artistic aesthetics'
+    
+    return reference
+  }
+  
+  const qualityKeywords = 'high quality, professional, consistent style, detailed, well-composed, artistic, masterful execution'
+  const styleConsistency = getStyleConsistencyPrompt(artStyle.id, artStyle.name)
+  
+  // 构建分镜提示词
+  let promptParts: string[] = []
+  
+  // 添加场景信息
+  if (sceneInfo) {
+    promptParts.push(`Scene setting: ${sceneInfo.name}. ${sceneInfo.description || ''}`)
+  }
+  
+  // 添加人物信息
+  if (characters && characters.length > 0) {
+    const characterNames = characters.map(c => c.name).join(', ')
+    const characterDescriptions = characters.map(c => c.description).filter(Boolean).join('. ')
+    promptParts.push(`Characters present: ${characterNames}. ${characterDescriptions}`)
+  }
+  
+  // 添加道具信息
+  if (props && props.length > 0) {
+    const propNames = props.map(p => p.name).join(', ')
+    const propDescriptions = props.map(p => p.description).filter(Boolean).join('. ')
+    promptParts.push(`Props/Objects present: ${propNames}. ${propDescriptions}`)
+  }
+  
+  // 添加分镜描述
+  if (shotDescription) {
+    promptParts.push(`Shot description: ${shotDescription}`)
+  }
+  
+  // 添加景别和运镜信息
+  if (shotType) {
+    promptParts.push(`Shot type: ${shotType}`)
+  }
+  if (cameraMovement) {
+    promptParts.push(`Camera movement: ${cameraMovement}`)
+  }
+  
+  // 组合提示词
+  const basePrompt = promptParts.join('. ')
+  
+  const prompt = `Professional storyboard shot illustration: ${basePrompt}. 
+Cinematic composition, detailed scene, atmospheric lighting, rich textures, depth of field, professional cinematography. 
+The shot should clearly show the scene environment, characters (if any), and the action described. 
+Style consistency: ${styleConsistency}. 
+Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+  
+  const cleanPrompt = prompt.replace(/\s+/g, ' ').trim()
+  
+  const images = await generateImageFromText(cleanPrompt, model, [], {
+    aspectRatio: '16:9',
+    count: 1
+  })
+  
+  return images[0]
+}
+
+// 单独生成场景或人物图片
+export const generateSingleImage = async (
+  item: BatchImageGenerationItem,
+  artStyle: { promptSuffix: string, name?: string, id?: string },
+  model: string = 'gemini-2.5-flash-image'
+): Promise<string> => {
+  // 构建风格一致性描述
+  const getStyleConsistencyPrompt = (styleId?: string, styleName?: string) => {
+    const styleReferences: Record<string, string> = {
+      'anime': 'in reference to Japanese anime style, maintaining consistent animation aesthetics, inspired by Studio Ghibli and Makoto Shinkai works',
+      'realistic': 'in reference to photorealistic photography style, maintaining consistent photographic aesthetics and color grading',
+      'cartoon': 'in reference to cartoon illustration style, maintaining consistent cartoon aesthetics and color palette',
+      'oil-painting': 'in reference to classical oil painting style, maintaining consistent painting techniques and color application',
+      'watercolor': 'in reference to watercolor painting style, maintaining consistent transparency and color blending',
+      'pixel-art': 'in reference to pixel art style, maintaining consistent pixel aesthetics and retro feel',
+      'cyberpunk': 'in reference to cyberpunk style, maintaining consistent futuristic atmosphere and neon aesthetics',
+      'ink-wash': 'in reference to Chinese ink wash painting style, maintaining consistent ink gradation and artistic conception',
+      '3d-render': 'in reference to 3D rendering style, maintaining consistent rendering quality and lighting effects',
+      'comic': 'in reference to comic book style, maintaining consistent line art and panel composition'
+    }
+    
+    const reference = styleId && styleReferences[styleId] 
+      ? styleReferences[styleId] 
+      : styleName 
+        ? `in reference to ${styleName} style, maintaining consistent visual aesthetics and artistic style`
+        : 'maintaining consistent visual style and artistic aesthetics'
+    
+    return reference
+  }
+  
+  const qualityKeywords = 'high quality, professional, consistent style, detailed, well-composed, artistic, masterful execution'
+  const styleConsistency = getStyleConsistencyPrompt(artStyle.id, artStyle.name)
+  
+  let prompt = ''
+  if (item.type === 'scene') {
+    prompt = `Professional scene illustration: ${item.name}. ${item.description || 'A detailed scene'}. 
+Wide establishing shot, cinematic composition, detailed environment, atmospheric lighting, 
+rich textures, depth of field, professional cinematography. 
+IMPORTANT CONSTRAINTS: Static environment only, no characters, no people, no animals, no moving objects, 
+only architectural elements, landscapes, furniture, decorations, and static environmental details. 
+Pure environmental scene without any living beings or dynamic elements. 
+Style consistency: ${styleConsistency}. 
+Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+  } else {
+    prompt = `Professional character design reference sheet: ${item.name}. ${item.description || 'A detailed character'}. 
+Character design sheet with multiple views arranged in reference sheet layout: 
+front view (full body), back view (full body), and close-up detail shots (face, hands, accessories). 
+Clear facial features, detailed costume and accessories, consistent character design across all views. 
+IMPORTANT REQUIREMENTS: Pure white background (#FFFFFF), character reference sheet format, 
+multiple views displayed in organized layout, isolated character on white background, 
+no background elements, no environment, clean reference sheet style. 
+Professional character turn-around sheet format with front view, back view, and detail close-ups. 
+Style consistency: ${styleConsistency}. 
+Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+  }
+  
+  prompt = prompt.replace(/\s+/g, ' ').trim()
+  
+  const images = await generateImageFromText(prompt, model, [], {
+    aspectRatio: item.type === 'scene' ? '16:9' : '1:1',
+    count: 1
+  })
+  
+  return images[0]
+}
+
+// 批量生成场景和人物图片
+export const generateBatchImages = async (
+  items: BatchImageGenerationItem[],
+  artStyle: { promptSuffix: string, name?: string, id?: string },
+  onProgress?: (completed: number, total: number, currentItem: string) => void,
+  model: string = 'gemini-2.5-flash-image'
+): Promise<BatchImageGenerationResult[]> => {
+  const results: BatchImageGenerationResult[] = []
+  
+  // 构建风格一致性描述
+  const getStyleConsistencyPrompt = (styleId?: string, styleName?: string) => {
+    // 根据风格类型添加参考风格描述（使用英文以确保更好的模型理解）
+    const styleReferences: Record<string, string> = {
+      'anime': 'in reference to Japanese anime style, maintaining consistent animation aesthetics, inspired by Studio Ghibli and Makoto Shinkai works',
+      'realistic': 'in reference to photorealistic photography style, maintaining consistent photographic aesthetics and color grading',
+      'cartoon': 'in reference to cartoon illustration style, maintaining consistent cartoon aesthetics and color palette',
+      'oil-painting': 'in reference to classical oil painting style, maintaining consistent painting techniques and color application',
+      'watercolor': 'in reference to watercolor painting style, maintaining consistent transparency and color blending',
+      'pixel-art': 'in reference to pixel art style, maintaining consistent pixel aesthetics and retro feel',
+      'cyberpunk': 'in reference to cyberpunk style, maintaining consistent futuristic atmosphere and neon aesthetics',
+      'ink-wash': 'in reference to Chinese ink wash painting style, maintaining consistent ink gradation and artistic conception',
+      '3d-render': 'in reference to 3D rendering style, maintaining consistent rendering quality and lighting effects',
+      'comic': 'in reference to comic book style, maintaining consistent line art and panel composition'
+    }
+    
+    const reference = styleId && styleReferences[styleId] 
+      ? styleReferences[styleId] 
+      : styleName 
+        ? `in reference to ${styleName} style, maintaining consistent visual aesthetics and artistic style`
+        : 'maintaining consistent visual style and artistic aesthetics'
+    
+    return reference
+  }
+  
+  // 通用质量保证关键词
+  const qualityKeywords = 'high quality, professional, consistent style, detailed, well-composed, artistic, masterful execution'
+  
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    onProgress?.(i, items.length, item.name)
+    
+    try {
+      // 构建增强的提示词
+      const styleConsistency = getStyleConsistencyPrompt(artStyle.id, artStyle.name)
+      
+      let prompt = ''
+      if (item.type === 'scene') {
+        // 场景提示词：只包含静态环境，不能包含人物和其他动态元素
+        prompt = `Professional scene illustration: ${item.name}. ${item.description || 'A detailed scene'}. 
+Wide establishing shot, cinematic composition, detailed environment, atmospheric lighting, 
+rich textures, depth of field, professional cinematography. 
+IMPORTANT CONSTRAINTS: Static environment only, no characters, no people, no animals, no moving objects, 
+only architectural elements, landscapes, furniture, decorations, and static environmental details. 
+Pure environmental scene without any living beings or dynamic elements. 
+Style consistency: ${styleConsistency}. 
+Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+      } else {
+        // 人物提示词：白色背景，包含三视图（正面、背面、特写）
+        prompt = `Professional character design reference sheet: ${item.name}. ${item.description || 'A detailed character'}. 
+Character design sheet with multiple views arranged in reference sheet layout: 
+front view (full body), back view (full body), and close-up detail shots (face, hands, accessories). 
+Clear facial features, detailed costume and accessories, consistent character design across all views. 
+IMPORTANT REQUIREMENTS: Pure white background (#FFFFFF), character reference sheet format, 
+multiple views displayed in organized layout, isolated character on white background, 
+no background elements, no environment, clean reference sheet style. 
+Professional character turn-around sheet format with front view, back view, and detail close-ups. 
+Style consistency: ${styleConsistency}. 
+Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+      }
+      
+      // 清理多余的空格和换行，保持单行格式
+      prompt = prompt.replace(/\s+/g, ' ').trim()
+      
+      // 生成图片
+      const images = await generateImageFromText(prompt, model, [], {
+        aspectRatio: item.type === 'scene' ? '16:9' : '1:1',
+        count: 1
+      })
+      
+      results.push({
+        id: item.id,
+        success: true,
+        image: images[0]
+      })
+    } catch (error: any) {
+      results.push({
+        id: item.id,
+        success: false,
+        error: getErrorMessage(error)
+      })
+    }
+    
+    // 短暂延迟避免 API 限流
+    if (i < items.length - 1) {
+      await wait(500)
+    }
+  }
+  
+  onProgress?.(items.length, items.length, '完成')
+  return results
 }
 
 export const generateStory = async (
   prompt: string,
   options?: { genre?: string, style?: string }
 ): Promise<{ title: string, story: string }> => {
-  const ai = getClient()
-
   let enhancedPrompt = prompt
   if (options?.genre) {
     enhancedPrompt += `\n\n故事类型：${options.genre}`
@@ -636,24 +975,20 @@ export const generateStory = async (
     enhancedPrompt += `\n风格要求：${options.style}`
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    config: {
-      systemInstruction: STORY_GENERATOR_INSTRUCTION,
-      responseMimeType: 'application/json'
-    },
-    contents: { parts: [{ text: `请根据以下创意生成一个短视频故事，返回JSON格式 {"title": "故事标题", "story": "完整故事内容"}：\n\n${enhancedPrompt}` }] }
-  })
-
   try {
-    const result = JSON.parse(response.text || '{}')
+    const result = await llmService.sendJsonRequest(
+      `请根据以下创意生成一个短视频故事，返回JSON格式 {"title": "故事标题", "story": "完整故事内容"}：\n\n${enhancedPrompt}`,
+      STORY_GENERATOR_INSTRUCTION
+    )
     return {
       title: result.title || '未命名故事',
-      story: result.story || response.text || ''
+      story: result.story || ''
     }
-  } catch {
-    // If JSON parsing fails, try to extract title from the first line
-    const text = response.text || ''
+  } catch (error: any) {
+    // 如果 JSON 解析失败，尝试普通文本响应
+    const text = await llmService.sendChatMessage([], enhancedPrompt, {
+      systemPrompt: STORY_GENERATOR_INSTRUCTION
+    })
     const lines = text.split('\n').filter(l => l.trim())
     return {
       title: lines[0]?.substring(0, 50) || '未命名故事',
@@ -662,10 +997,19 @@ export const generateStory = async (
   }
 }
 
-export const generateStoryShots = async (
-  story: string,
-  storyTitle?: string
-): Promise<Array<{
+export interface GeneratedScene {
+  id: string
+  name: string
+  description: string
+}
+
+export interface GeneratedCharacter {
+  id: string
+  name: string
+  description: string
+}
+
+export interface GeneratedShot {
   shotNumber: number
   duration: number
   sceneType: string
@@ -673,28 +1017,292 @@ export const generateStoryShots = async (
   description: string
   dialogue: string
   notes: string
-}>> => {
-  const ai = getClient()
+  sceneId?: string
+  characterIds?: string[]
+}
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    config: {
-      systemInstruction: STORY_TO_SHOTS_INSTRUCTION,
-      responseMimeType: 'application/json'
-    },
-    contents: { parts: [{ text: `故事标题：${storyTitle || '未命名'}\n\n故事内容：\n${story}\n\n请将上述故事拆分成详细的分镜列表。` }] }
-  })
+export interface GenerateStoryShotsResult {
+  scenes: GeneratedScene[]
+  characters: GeneratedCharacter[]
+  shots: GeneratedShot[]
+}
+
+export const generateStoryShots = async (
+  story: string,
+  storyTitle?: string
+): Promise<GenerateStoryShotsResult> => {
+  try {
+    const result = await llmService.sendJsonRequest(
+      `故事标题：${storyTitle || '未命名'}\n\n故事内容：\n${story}\n\n请将上述故事拆分成详细的分镜列表，同时提取场景和人物信息。`,
+      STORY_TO_SHOTS_INSTRUCTION
+    )
+    
+    // 兼容旧格式（纯数组）和新格式（包含 scenes, characters, shots 的对象）
+    if (Array.isArray(result)) {
+      // 旧格式：返回空的场景和人物
+      return {
+        scenes: [],
+        characters: [],
+        shots: result
+      }
+    }
+    
+    return {
+      scenes: Array.isArray(result.scenes) ? result.scenes : [],
+      characters: Array.isArray(result.characters) ? result.characters : [],
+      shots: Array.isArray(result.shots) ? result.shots : []
+    }
+  } catch {
+    return {
+      scenes: [],
+      characters: [],
+      shots: []
+    }
+  }
+}
+
+/**
+ * 使用 multipart/form-data 格式生成视频（Sora-2 等模型）
+ * 根据用户提供的 Python 示例实现
+ */
+/**
+ * 查询视频生成任务状态
+ */
+export const checkVideoTaskStatus = async (
+  taskId: string,
+  options: {
+    baseUrl?: string
+  } = {}
+): Promise<{ status: string, progress: number, videoUrl?: string, failReason?: string, data?: any }> => {
+  const { apiKey, baseUrl: configBaseUrl } = getSoraVideoGenApiKey()
+  
+  if (!apiKey) {
+    throw new Error("Sora Video Generation API Key is missing. Please configure it in Settings.")
+  }
+
+  const baseUrl = options.baseUrl || configBaseUrl || ''
+  const endpoint = baseUrl.endsWith('/v1/videos') 
+    ? `${baseUrl}/${taskId}`
+    : baseUrl.endsWith('/v1')
+      ? `${baseUrl}/videos/${taskId}`
+      : baseUrl
+        ? `${baseUrl}/v1/videos/${taskId}`
+        : `/v1/videos/${taskId}`
 
   try {
-    const shots = JSON.parse(response.text || '[]')
-    return Array.isArray(shots) ? shots : []
-  } catch {
-    return []
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      }
+    })
+
+    if (response.status === 404) {
+      // 任务可能还在同步中，返回等待状态
+      return { status: 'queued', progress: 0 }
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`Task status check failed: ${response.status} ${errorText}`)
+    }
+
+    const data = await response.json()
+    const status = data.status || 'unknown'
+    const progress = data.progress || 0
+
+    // 如果任务完成，尝试获取视频 URL
+    let videoUrl: string | undefined
+    if (status === 'completed') {
+      videoUrl = data.url || data.output || data.video_url
+      // 有时候链接藏在 data 字段里
+      if (!videoUrl && data.data && typeof data.data === 'object') {
+        videoUrl = data.data.url || data.data.video_url
+      }
+    }
+
+    return {
+      status,
+      progress,
+      videoUrl,
+      failReason: data.fail_reason || data.error,
+      data
+    }
+  } catch (error: any) {
+    console.error('查询任务状态错误:', error)
+    throw new Error(getErrorMessage(error))
+  }
+}
+
+/**
+ * 轮询视频生成任务直到完成
+ */
+export const pollVideoTask = async (
+  taskId: string,
+  options: {
+    baseUrl?: string
+    onProgress?: (progress: number, status: string) => void
+    maxAttempts?: number
+    interval?: number
+  } = {}
+): Promise<{ videoUrl: string }> => {
+  const maxAttempts = options.maxAttempts || 120 // 默认最多尝试 120 次（10分钟，每5秒一次）
+  const interval = options.interval || 5000 // 默认每5秒查询一次
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const result = await checkVideoTaskStatus(taskId, { baseUrl: options.baseUrl })
+
+      // 调用进度回调
+      options.onProgress?.(result.progress, result.status)
+
+      if (result.status === 'completed') {
+        if (result.videoUrl) {
+          return { videoUrl: result.videoUrl }
+        } else {
+          throw new Error('Task completed but no video URL found')
+        }
+      }
+
+      if (result.status === 'failed') {
+        throw new Error(result.failReason || 'Video generation failed')
+      }
+
+      // 如果还在处理中，等待后继续轮询
+      if (result.status === 'queued' || result.status === 'processing') {
+        await wait(interval)
+        continue
+      }
+
+      // 未知状态，等待后继续
+      await wait(interval)
+    } catch (error: any) {
+      // 如果是 404，可能是任务还在同步，继续等待
+      if (error.message?.includes('404') || error.message?.includes('not found')) {
+        await wait(interval)
+        continue
+      }
+      throw error
+    }
+  }
+
+  throw new Error('Task polling timeout')
+}
+
+export const generateVideoWithMultipart = async (
+  prompt: string,
+  options: {
+    model?: string
+    size?: string
+    seconds?: number
+    baseUrl?: string
+    pollUntilComplete?: boolean
+    onProgress?: (progress: number, status: string) => void
+  } = {}
+): Promise<{ videoUrl: string, taskId?: string }> => {
+  // 使用专门的 Sora 视频生成 API Key
+  const { apiKey, baseUrl: configBaseUrl } = getSoraVideoGenApiKey()
+  
+  if (!apiKey) {
+    throw new Error("Sora Video Generation API Key is missing. Please configure it in Settings.")
+  }
+
+  // 获取配置中的模型和 baseUrl
+  const soraConfig = getSoraVideoGenConfig()
+  
+  // 使用配置的 baseUrl 或传入的 baseUrl，默认为 /v1/videos
+  const baseUrl = options.baseUrl || configBaseUrl || ''
+  const endpoint = baseUrl.endsWith('/v1/videos') 
+    ? baseUrl 
+    : baseUrl.endsWith('/v1')
+      ? `${baseUrl}/videos`
+      : baseUrl
+        ? `${baseUrl}/v1/videos`
+        : '/v1/videos'
+
+  // 使用传入的模型或配置中的模型，默认为 sora-2
+  const model = options.model || soraConfig.model || 'sora-2'
+  const size = options.size || '720x1280'
+  const seconds = options.seconds || 15
+
+  // 准备表单数据
+  const formData = new FormData()
+  formData.append('model', model)
+  formData.append('prompt', prompt)
+  formData.append('size', size)
+  formData.append('seconds', seconds.toString())
+
+  // 关键：即使不传图片，也要添加一个空的文件字段，强制使用 multipart/form-data
+  // 创建一个空的 Blob 作为占位符
+  const emptyBlob = new Blob([''], { type: 'application/octet-stream' })
+  formData.append('placeholder', emptyBlob, '')
+
+  try {
+    console.log('🚀 正在以 multipart/form-data 格式提交视频生成任务...')
+    
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+        // 注意：不手动设置 Content-Type，让浏览器自动设置 multipart/form-data
+      },
+      body: formData
+    })
+
+    console.log(`📡 状态码: ${response.status}`)
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ 提交失败，服务器返回：', errorText)
+      throw new Error(`Video generation failed: ${response.status} ${errorText}`)
+    }
+
+    const result = await response.json()
+    console.log('✅ 提交成功！', result)
+
+    // 获取任务 ID
+    const taskId = result.id || result.taskId
+
+    // 如果启用了轮询直到完成，则等待任务完成
+    if (options.pollUntilComplete && taskId) {
+      console.log('🔄 开始轮询任务状态...')
+      const pollResult = await pollVideoTask(taskId, {
+        baseUrl,
+        onProgress: options.onProgress,
+        interval: 5000
+      })
+      return {
+        videoUrl: pollResult.videoUrl,
+        taskId
+      }
+    }
+
+    // 如果 API 返回的是任务 ID，返回任务 ID
+    if (taskId) {
+      return {
+        videoUrl: '', // 需要轮询获取
+        taskId
+      }
+    }
+
+    // 如果直接返回视频 URL
+    if (result.videoUrl || result.url || result.video) {
+      return {
+        videoUrl: result.videoUrl || result.url || result.video
+      }
+    }
+
+    throw new Error('Unexpected API response format')
+  } catch (error: any) {
+    console.error('视频生成错误:', error)
+    throw new Error(getErrorMessage(error))
   }
 }
 
 export const orchestrateVideoPrompt = async (images: string[], userPrompt: string): Promise<string> => {
-  const ai = getClient()
+  // 注意：这个函数需要视觉能力，暂时保留使用 Gemini
+  // 未来可以根据当前模型是否支持视觉来决定使用哪个服务
+  const ai = getGeminiClient()
   const parts: Part[] = images.map(img => ({ inlineData: { data: img.replace(/^data:.*;base64,/, ""), mimeType: "image/png" } }))
   parts.push({ text: `Create a single video prompt that transitions between these images. User Intent: ${userPrompt}` })
 
@@ -716,7 +1324,7 @@ export const generateAudio = async (
   referenceAudio?: string,
   options?: { persona?: any, emotion?: any }
 ): Promise<string> => {
-  const ai = getClient()
+  const ai = getGeminiClient()
 
   const parts: Part[] = [{ text: prompt }]
   if (referenceAudio) {
@@ -747,7 +1355,7 @@ export const generateAudio = async (
 }
 
 export const transcribeAudio = async (audioBase64: string): Promise<string> => {
-  const ai = getClient()
+  const ai = getGeminiClient()
   const mime = audioBase64.match(/^data:(audio\/\w+);base64,/)?.[1] || 'audio/wav'
   const data = audioBase64.replace(/^data:audio\/\w+;base64,/, "")
 
@@ -768,7 +1376,7 @@ export const connectLiveSession = async (
   onAudioData: (base64: string) => void,
   onClose: () => void
 ) => {
-  const ai = getClient()
+  const ai = getGeminiClient()
   const model = 'gemini-2.5-flash-native-audio-preview-09-2025'
   const sessionPromise = ai.live.connect({
     model,

@@ -948,6 +948,30 @@ const handleStoryboardAIGenerate = async (shotId: string) => {
   // This can be extended to use the Gemini API to analyze and suggest shot details
 }
 
+// Handle viewing existing storyboard from a story node
+const handleViewStoryboard = (nodeId: string) => {
+  const node = nodes.value.find(n => n.id === nodeId)
+  if (!node || !node.data.storyShots || node.data.storyShots.length === 0) return
+
+  // 从节点数据中恢复分镜板
+  // 注意：节点中可能没有保存完整的 scenes 和 characters，需要从已保存的分镜板中恢复
+  // 或者创建一个新的分镜板对象
+  const storyboard: Storyboard = {
+    id: `sb-node-${nodeId}`,
+    title: node.data.storyTitle || '未命名分镜板',
+    shots: node.data.storyShots || [],
+    scenes: [], // 场景和人物信息需要从其他地方恢复，或者为空数组
+    characters: [],
+    storyProps: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  }
+
+  // 设置当前分镜板并打开面板
+  currentStoryboard.value = storyboard
+  isStoryboardOpen.value = true
+}
+
 // Handle generating story shots from a story node
 const handleGenerateStoryShots = async (nodeId: string) => {
   const node = nodes.value.find(n => n.id === nodeId)
@@ -958,14 +982,51 @@ const handleGenerateStoryShots = async (nodeId: string) => {
   handleNodeUpdate(nodeId, { progress: '正在生成分镜...' })
 
   try {
-    const shots = await generateStoryShots(node.data.story, node.data.storyTitle)
+    const result = await generateStoryShots(node.data.story, node.data.storyTitle)
 
-    if (shots.length === 0) {
+    if (result.shots.length === 0) {
       throw new Error('未能生成分镜，请重试')
     }
 
+    // 预定义颜色
+    const colorOptions = [
+      '#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e',
+      '#14b8a6', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6',
+      '#a855f7', '#d946ef', '#ec4899', '#f43f5e'
+    ]
+
+    // 转换场景数据
+    const storyboardScenes = result.scenes.map((scene, index) => ({
+      id: scene.id || `scene-${Date.now()}-${index}`,
+      name: scene.name || `场景 ${index + 1}`,
+      description: scene.description || '',
+      color: colorOptions[index % colorOptions.length]
+    }))
+
+    // 转换人物数据
+    const storyboardCharacters = result.characters.map((char, index) => ({
+      id: char.id || `char-${Date.now()}-${index}`,
+      name: char.name || `角色 ${index + 1}`,
+      description: char.description || '',
+      color: colorOptions[(index + 7) % colorOptions.length]
+    }))
+
+    // 创建场景ID映射（处理AI可能返回的不同ID格式）
+    const sceneIdMap = new Map<string, string>()
+    result.scenes.forEach((scene, index) => {
+      const newId = storyboardScenes[index].id
+      sceneIdMap.set(scene.id, newId)
+    })
+
+    // 创建人物ID映射
+    const charIdMap = new Map<string, string>()
+    result.characters.forEach((char, index) => {
+      const newId = storyboardCharacters[index].id
+      charIdMap.set(char.id, newId)
+    })
+
     // Convert to StoryboardShot format
-    const storyboardShots = shots.map((shot, index) => ({
+    const storyboardShots = result.shots.map((shot, index) => ({
       id: `shot-${Date.now()}-${index}`,
       shotNumber: shot.shotNumber || index + 1,
       duration: shot.duration || 3,
@@ -974,7 +1035,10 @@ const handleGenerateStoryShots = async (nodeId: string) => {
       description: shot.description || '',
       dialogue: shot.dialogue || '',
       notes: shot.notes || '',
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      // 关联场景和人物（使用映射后的ID）
+      sceneId: shot.sceneId ? (sceneIdMap.get(shot.sceneId) || shot.sceneId) : undefined,
+      characterIds: shot.characterIds?.map(id => charIdMap.get(id) || id) || []
     }))
 
     // Update node with generated shots
@@ -984,10 +1048,13 @@ const handleGenerateStoryShots = async (nodeId: string) => {
     })
 
     // Create or update storyboard and open it
-    const newStoryboard = {
+    const newStoryboard: Storyboard = {
       id: `sb-${Date.now()}`,
       title: node.data.storyTitle || '未命名分镜板',
       shots: storyboardShots,
+      scenes: storyboardScenes,
+      characters: storyboardCharacters,
+      storyProps: [],
       createdAt: Date.now(),
       updatedAt: Date.now()
     }
@@ -1290,6 +1357,7 @@ provide('canvas', canvas)
           @resize-mouse-down="handleResizeMouseDown"
           @input-reorder="handleInputReorder"
           @generate-story-shots="handleGenerateStoryShots"
+          @view-storyboard="handleViewStoryboard"
         />
 
         <!-- Selection Rect -->
