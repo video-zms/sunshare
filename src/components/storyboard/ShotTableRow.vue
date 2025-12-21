@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { ChevronDown, GripVertical, Copy, ChevronUp, ChevronDown as ChevronDownIcon, Trash2 } from 'lucide-vue-next'
 import SelectDropdown from './SelectDropdown.vue'
 import ImageField from '../common/ImageField.vue'
 import VideoField from '../common/VideoField.vue'
+import TextField from '../common/TextField.vue'
 import type { StoryboardShot, SceneType, CameraMovement, StoryScene, StoryCharacter, StoryProp } from '../../types'
 
 interface Props {
@@ -93,6 +95,14 @@ const handleVideoChange = (video: string | null) => {
   // VideoField 组件已经处理了文件读取，这里直接更新 shot 的 videoUrl
   emit('update:shot', { ...props.shot, videoUrl: video || undefined })
 }
+
+// 转换视频生成状态：'processing' -> 'in_progress'
+const videoGeneratingStatus = computed(() => {
+  if (props.shot.videoGeneratingStatus === 'processing') {
+    return 'in_progress' as const
+  }
+  return props.shot.videoGeneratingStatus
+})
 </script>
 
 <template>
@@ -143,8 +153,9 @@ const handleVideoChange = (video: string | null) => {
       <VideoField
         :video="shot.videoUrl"
         :is-generating="isGenerating || (shot.videoGeneratingStatus === 'queued' || shot.videoGeneratingStatus === 'processing')"
-        :generating-status="shot.videoGeneratingStatus"
+        :generating-status="videoGeneratingStatus"
         :generating-progress="shot.videoGeneratingProgress"
+        :reference-image="shot.sceneImage"
         width="160px"
         height="90px"
         upload-text="上传视频"
@@ -164,13 +175,14 @@ const handleVideoChange = (video: string | null) => {
 
     <!-- Duration -->
     <td v-if="visibleColumns.duration" class="px-4 py-3 text-center">
-      <input
+      <TextField
         type="number"
-        :value="shot.duration"
-        @input="emit('update:shot', { ...shot, duration: Number(($event.target as HTMLInputElement).value) })"
+        :model-value="shot.duration"
+        @update:model-value="(value) => emit('update:shot', { ...shot, duration: Number(value) })"
+        width="64px"
         min="0"
-        class="w-16 px-2 py-1.5 bg-white/5 border border-white/10 rounded-lg text-center text-sm text-white outline-none focus:border-cyan-500/50 transition-colors"
         placeholder="0"
+        custom-class="text-center"
       />
     </td>
 
@@ -292,33 +304,40 @@ const handleVideoChange = (video: string | null) => {
 
     <!-- Description -->
     <td v-if="visibleColumns.description" class="px-4 py-3">
-      <input
+      <TextField
         type="text"
-        :value="shot.description"
-        @input="emit('update:shot', { ...shot, description: ($event.target as HTMLInputElement).value })"
-        class="w-full h-full px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-cyan-500/50 transition-colors"
+        :model-value="shot.description"
+        @update:model-value="(value) => emit('update:shot', { ...shot, description: String(value) })"
+        width="100%"
         placeholder="请输入"
+        multiline
+        :rows="5"
       />
     </td>
 
     <!-- Dialogue -->
     <td v-if="visibleColumns.dialogue" class="px-4 py-3">
-      <input
+      <TextField
         type="text"
-        :value="shot.dialogue"
-        @input="emit('update:shot', { ...shot, dialogue: ($event.target as HTMLInputElement).value })"
-        class="w-full px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-cyan-500/50 transition-colors"
+        :model-value="shot.dialogue"
+        @update:model-value="(value) => emit('update:shot', { ...shot, dialogue: String(value) })"
+        width="100%"
+        multiline
+        :rows="5"
+        
         placeholder="请输入"
       />
     </td>
 
     <!-- Notes -->
     <td v-if="visibleColumns.notes" class="px-4 py-3">
-      <input
+      <TextField
         type="text"
-        :value="shot.notes"
-        @input="emit('update:shot', { ...shot, notes: ($event.target as HTMLInputElement).value })"
-        class="w-full px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-cyan-500/50 transition-colors"
+        :model-value="shot.notes"
+        @update:model-value="(value) => emit('update:shot', { ...shot, notes: String(value) })"
+        width="100%"
+        multiline
+        :rows="5"
         placeholder="请输入"
       />
     </td>

@@ -706,13 +706,13 @@ export interface BatchImageGenerationResult {
 // 生成分镜图片（结合场景、人物、道具和分镜描述）
 export const generateShotImage = async (
   shotDescription: string,
-  sceneInfo?: { name: string, description: string },
-  characters?: Array<{ name: string, description: string }>,
+  sceneInfo?: { name: string, description: string, image?: string },
+  characters?: Array<{ name: string, description: string, image?: string }>,
   shotType?: string,
   cameraMovement?: string,
   artStyle: { promptSuffix: string, name?: string, id?: string } = { promptSuffix: '' },
   model: string = 'gemini-2.5-flash-image',
-  props?: Array<{ name: string, description: string }>
+  props?: Array<{ name: string, description: string, image?: string }>
 ): Promise<string> => {
   // 构建风格一致性描述
   const getStyleConsistencyPrompt = (styleId?: string, styleName?: string) => {
@@ -776,10 +776,42 @@ export const generateShotImage = async (
     promptParts.push(`Camera movement: ${cameraMovement}`)
   }
   
+  // 收集参考图片
+  const referenceImages: string[] = []
+  
+  // 添加场景参考图
+  if (sceneInfo?.image) {
+    referenceImages.push(sceneInfo.image)
+  }
+  
+  // 添加角色参考图
+  if (characters && characters.length > 0) {
+    for (const char of characters) {
+      if (char.image) {
+        referenceImages.push(char.image)
+      }
+    }
+  }
+  
+  // 添加道具参考图
+  if (props && props.length > 0) {
+    for (const prop of props) {
+      if (prop.image) {
+        referenceImages.push(prop.image)
+      }
+    }
+  }
+  
   // 组合提示词
   const basePrompt = promptParts.join('. ')
   
-  const prompt = `Professional storyboard shot illustration: ${basePrompt}. 
+  // 如果有参考图，在提示词中说明
+  let referencePrompt = ''
+  if (referenceImages.length > 0) {
+    referencePrompt = ` Use the provided reference images for scene setting, character appearance, and props as visual guidance.`
+  }
+  
+  const prompt = `Professional storyboard shot illustration: ${basePrompt}.${referencePrompt}
 Cinematic composition, detailed scene, atmospheric lighting, rich textures, depth of field, professional cinematography. 
 The shot should clearly show the scene environment, characters (if any), and the action described. 
 Style consistency: ${styleConsistency}. 
@@ -787,7 +819,7 @@ Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
   
   const cleanPrompt = prompt.replace(/\s+/g, ' ').trim()
   
-  const images = await generateImageFromText(cleanPrompt, model, [], {
+  const images = await generateImageFromText(cleanPrompt, model, referenceImages, {
     aspectRatio: '16:9',
     count: 1
   })
@@ -1198,6 +1230,8 @@ export const generateVideoWithMultipart = async (
     baseUrl?: string
     pollUntilComplete?: boolean
     onProgress?: (progress: number, status: string) => void
+    inputImage?: string | null // 输入图片（base64 格式，用于 image-to-video）
+    characterIds?: string[] // Sora 角色 ID 列表
   } = {}
 ): Promise<{ videoUrl: string, taskId?: string }> => {
   // 使用专门的 Sora 视频生成 API Key
@@ -1232,10 +1266,40 @@ export const generateVideoWithMultipart = async (
   formData.append('size', size)
   formData.append('seconds', seconds.toString())
 
-  // 关键：即使不传图片，也要添加一个空的文件字段，强制使用 multipart/form-data
-  // 创建一个空的 Blob 作为占位符
-  const emptyBlob = new Blob([''], { type: 'application/octet-stream' })
-  formData.append('placeholder', emptyBlob, '')
+  // 如果有 Sora 角色 ID，添加到表单数据中
+  if (options.characterIds && options.characterIds.length > 0) {
+    // 根据 API 文档，可能需要以 JSON 数组或逗号分隔的字符串形式传递
+    // 这里假设 API 接受 character_ids 字段，格式为 JSON 数组
+    formData.append('character_ids', JSON.stringify(options.characterIds))
+    console.log('✅ 已添加 Sora 角色 ID 到视频生成请求:', options.characterIds)
+  }
+
+  // 如果有输入图片，添加到表单数据中
+  if (options.inputImage) {
+    try {
+      // 将 base64 数据转换为 Blob
+      const base64Data = options.inputImage.replace(/^data:image\/\w+;base64,/, '')
+      const mimeType = options.inputImage.match(/^data:(image\/\w+);base64,/)?.[1] || 'image/png'
+      const byteCharacters = atob(base64Data)
+      const byteNumbers = new Array(byteCharacters.length)
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i)
+      }
+      const byteArray = new Uint8Array(byteNumbers)
+      const blob = new Blob([byteArray], { type: mimeType })
+      
+      // 添加到表单数据，字段名可能是 'image' 或 'input_image'，根据 API 文档调整
+      formData.append('image', blob, 'reference.png')
+      console.log('✅ 已添加参考图片到视频生成请求')
+    } catch (error) {
+      console.warn('⚠️ 添加参考图片失败，将仅使用文本提示词:', error)
+    }
+  } else {
+    // 关键：即使不传图片，也要添加一个空的文件字段，强制使用 multipart/form-data
+    // 创建一个空的 Blob 作为占位符
+    const emptyBlob = new Blob([''], { type: 'application/octet-stream' })
+    formData.append('placeholder', emptyBlob, '')
+  }
 
   try {
     console.log('🚀 正在以 multipart/form-data 格式提交视频生成任务...')
@@ -1295,6 +1359,95 @@ export const generateVideoWithMultipart = async (
     throw new Error('Unexpected API response format')
   } catch (error: any) {
     console.error('视频生成错误:', error)
+    throw new Error(getErrorMessage(error))
+  }
+}
+
+/**
+ * 创建 Sora 角色
+ * @param name 角色名称
+ * @param description 角色描述
+ * @param image 角色图片（base64 格式）
+ * @returns Sora 角色 ID
+ */
+export const createSoraCharacter = async (
+  name: string,
+  description: string,
+  image?: string | null
+): Promise<{ characterId: string }> => {
+  const { apiKey, baseUrl: configBaseUrl } = getSoraVideoGenApiKey()
+  
+  if (!apiKey) {
+    throw new Error("Sora Video Generation API Key is missing. Please configure it in Settings.")
+  }
+
+  // 构建角色创建端点
+  const baseUrl = configBaseUrl || ''
+  const endpoint = baseUrl.endsWith('/v1/characters')
+    ? baseUrl
+    : baseUrl.endsWith('/v1')
+      ? `${baseUrl}/characters`
+      : baseUrl
+        ? `${baseUrl}/v1/characters`
+        : '/v1/characters'
+
+  // 准备表单数据
+  const formData = new FormData()
+  formData.append('name', name)
+  formData.append('description', description)
+
+  // 如果有角色图片，添加到表单数据中
+  if (image) {
+    try {
+      const base64Data = image.replace(/^data:image\/\w+;base64,/, '')
+      const mimeType = image.match(/^data:(image\/\w+);base64,/)?.[1] || 'image/png'
+      const byteCharacters = atob(base64Data)
+      const byteNumbers = new Array(byteCharacters.length)
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i)
+      }
+      const byteArray = new Uint8Array(byteNumbers)
+      const blob = new Blob([byteArray], { type: mimeType })
+      
+      formData.append('image', blob, 'character.png')
+      console.log('✅ 已添加角色图片到创建请求')
+    } catch (error) {
+      console.warn('⚠️ 添加角色图片失败:', error)
+    }
+  }
+
+  try {
+    console.log('🚀 正在创建 Sora 角色...')
+    
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: formData
+    })
+
+    console.log(`📡 状态码: ${response.status}`)
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ 创建角色失败，服务器返回：', errorText)
+      throw new Error(`Character creation failed: ${response.status} ${errorText}`)
+    }
+
+    const result = await response.json()
+    console.log('✅ 角色创建成功！', result)
+
+    // 获取角色 ID
+    const characterId = result.id || result.characterId || result.character_id
+
+    if (!characterId) {
+      throw new Error('Unexpected API response format: missing character ID')
+    }
+
+    return { characterId }
+  } catch (error: any) {
+    console.error('创建角色错误:', error)
     throw new Error(getErrorMessage(error))
   }
 }

@@ -32,6 +32,8 @@ interface Props {
   accept?: string
   // 自定义类名
   customClass?: string
+  // 参考图片（用于视频生成，如分镜图）
+  referenceImage?: string | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -48,14 +50,15 @@ const props = withDefaults(defineProps<Props>(), {
   disableDelete: false,
   enableDragDrop: true,
   accept: 'video/*',
-  customClass: ''
+  customClass: '',
+  referenceImage: null
 })
 
 const emit = defineEmits<{
   // 上传事件
   upload: [event: Event]
-  // 生成事件
-  generate: []
+  // 生成事件（传递参考图片）
+  generate: [referenceImage?: string | null]
   // 删除事件
   delete: []
   // 视频变化事件（上传或生成后）
@@ -107,7 +110,7 @@ const handleUpload = (event: Event) => {
 
 const handleGenerate = () => {
   if (props.disableGenerate || props.isGenerating) return
-  emit('generate')
+  emit('generate', props.referenceImage)
 }
 
 const handleDelete = () => {

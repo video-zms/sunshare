@@ -8,7 +8,7 @@ import {
 } from 'lucide-vue-next'
 import type { StoryboardShot, SceneType, CameraMovement, Storyboard, StoryScene, StoryCharacter, StoryProp, ArtStyle } from '../types'
 import { ART_STYLES } from '../types'
-import { generateBatchImages, generateSingleImage, generateShotImage, generateVideoWithMultipart, type BatchImageGenerationItem } from '../services/geminiService'
+import { generateBatchImages, generateSingleImage, generateShotImage, generateVideoWithMultipart, createSoraCharacter, type BatchImageGenerationItem } from '../services/geminiService'
 import { saveToStorage, loadFromStorage } from '../services/storage'
 import StoryboardShotsList from './storyboard/StoryboardShotsList.vue'
 import StoryboardScenesView from './storyboard/StoryboardScenesView.vue'
@@ -157,7 +157,7 @@ const loadSavedData = async (id: string) => {
       scenes.value = saved.scenes || []
       characters.value = saved.characters || []
       storyProps.value = saved.storyProps || []
-      console.log('已恢复保存的分镜数据')
+      console.log('已恢复保存的分镜数据', saved)
       return true
     }
   } catch (error) {
@@ -470,7 +470,8 @@ const createNewCharacter = (): StoryCharacter => ({
   id: `char-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
   name: `角色 ${characters.value.length + 1}`,
   description: '',
-  color: colorOptions[(characters.value.length + 7) % colorOptions.length]
+  color: colorOptions[(characters.value.length + 7) % colorOptions.length],
+  type: 'custom' // 默认为自定义图片角色
 })
 
 const addCharacter = () => {
@@ -520,6 +521,53 @@ const updateCharacter = (character: StoryCharacter) => {
 const getCharactersByIds = (ids?: string[]) => {
   if (!ids || ids.length === 0) return []
   return ids.map(id => getCharacterById(id)).filter(Boolean) as StoryCharacter[]
+}
+
+// 创建 Sora 角色
+const handleCreateSoraCharacter = async (characterId: string) => {
+  const char = characters.value.find(c => c.id === characterId)
+  if (!char) return
+
+  // 防止重复创建
+  if (generatingCharacterIds.value.has(characterId)) {
+    return
+  }
+
+  // 检查是否已有 Sora 角色 ID
+  if (char.soraCharacterId) {
+    console.log('角色已有 Sora ID:', char.soraCharacterId)
+    return
+  }
+
+  // 检查角色类型
+  if (char.type !== 'sora') {
+    console.warn('角色类型不是 sora，无法创建 Sora 角色')
+    return
+  }
+
+  generatingCharacterIds.value.add(characterId)
+
+  try {
+    const result = await createSoraCharacter(
+      char.name,
+      char.description,
+      char.image || null
+    )
+
+    // 更新角色的 Sora ID
+    const index = characters.value.findIndex(c => c.id === characterId)
+    if (index !== -1) {
+      characters.value[index] = {
+        ...characters.value[index],
+        soraCharacterId: result.characterId
+      }
+    }
+  } catch (error: any) {
+    console.error('创建 Sora 角色失败:', error)
+    alert(`创建 Sora 角色失败: ${error.message || '未知错误'}`)
+  } finally {
+    generatingCharacterIds.value.delete(characterId)
+  }
 }
 
 // 切换分镜的场景选择（已移到上面）
@@ -945,30 +993,33 @@ const generateShotImageForShot = async (shotId: string) => {
   
   generatingShotIds.value.add(shotId)
   try {
-    // 获取关联的场景信息
+    // 获取关联的场景信息（包含参考图）
     const scene = shot.sceneId ? getSceneById(shot.sceneId) : null
     const sceneInfo = scene ? {
       name: scene.name,
-      description: scene.description
+      description: scene.description,
+      image: scene.image // 传递场景参考图
     } : undefined
     
-    // 获取关联的人物信息
+    // 获取关联的人物信息（包含参考图）
     const shotCharacters = shot.characterIds && shot.characterIds.length > 0
       ? getCharactersByIds(shot.characterIds).map(char => ({
           name: char.name,
-          description: char.description
+          description: char.description,
+          image: char.image // 传递角色参考图
         }))
       : undefined
     
-    // 获取关联的道具信息
+    // 获取关联的道具信息（包含参考图）
     const shotProps = shot.propIds && shot.propIds.length > 0
       ? getPropsByIds(shot.propIds).map(prop => ({
           name: prop.name,
-          description: prop.description
+          description: prop.description,
+          image: prop.image // 传递道具参考图
         }))
       : undefined
     
-    // 生成分镜图片
+    // 生成分镜图片（现在会传递参考图）
     const image = await generateShotImage(
       shot.description || '',
       sceneInfo,
@@ -1025,11 +1076,29 @@ const generateShotVideoForShot = async (shotId: string) => {
       }
     }
     
-    // 添加人物信息
+    // 添加人物信息并区分角色类型
+    let soraCharacterIds: string[] = []
+    let customCharacterImages: string[] = []
+    
     if (shot.characterIds && shot.characterIds.length > 0) {
       const characters = getCharactersByIds(shot.characterIds)
-      const characterNames = characters.map(c => c.name).join(', ')
-      promptParts.push(`人物: ${characterNames}`)
+      const characterNames: string[] = []
+      
+      characters.forEach(char => {
+        characterNames.push(char.name)
+        
+        if (char.type === 'sora' && char.soraCharacterId) {
+          // Sora 角色：收集角色 ID
+          soraCharacterIds.push(char.soraCharacterId)
+          promptParts.push(`Sora角色[${char.soraCharacterId}]: ${char.name}. ${char.description || ''}`)
+        } else {
+          // 自定义图片角色：收集图片作为参考
+          if (char.image) {
+            customCharacterImages.push(char.image)
+          }
+          promptParts.push(`人物: ${char.name}. ${char.description || ''}`)
+        }
+      })
     }
     
     // 添加道具信息
@@ -1060,12 +1129,21 @@ const generateShotVideoForShot = async (shotId: string) => {
     // 组合提示词
     const prompt = promptParts.join('. ')
     
+    // 获取分镜图（如果有）
+    const referenceImage = shot.sceneImage || null
+    
+    // 优先使用自定义角色的图片作为参考图（如果有多个，使用第一个）
+    // 如果没有自定义角色图片，则使用分镜图
+    const inputImage = customCharacterImages.length > 0 ? customCharacterImages[0] : referenceImage
+    
     // 调用视频生成 API（不等待完成，返回任务ID后轮询）
     const result = await generateVideoWithMultipart(prompt, {
       model: 'sora-2',
       size: '720x1280',
       seconds: shot.duration || 15,
-      pollUntilComplete: false // 不在这里等待，而是启动后台轮询
+      pollUntilComplete: false, // 不在这里等待，而是启动后台轮询
+      inputImage: inputImage, // 传递参考图片（优先使用自定义角色图片）
+      characterIds: soraCharacterIds.length > 0 ? soraCharacterIds : undefined // 传递 Sora 角色 ID
     })
     
     // 保存任务ID
@@ -1631,6 +1709,7 @@ const executeBatchGenerate = async () => {
               @update-character="updateCharacter"
               @image-upload="handleCharacterImageUpload"
               @generate-image="generateCharacterImage"
+              @create-sora-character="handleCreateSoraCharacter"
             />
 
             <!-- ========== 道具管理视图 ========== -->

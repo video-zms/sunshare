@@ -43,6 +43,7 @@ export interface NodeData {
   storyTitle?: string
   storyGenre?: string
   storyShots?: StoryboardShot[]
+  storyboardId?: string // 关联的分镜板ID
 }
 
 export interface AppNode {
@@ -131,6 +132,8 @@ export interface StoryCharacter {
   description: string
   image?: string // base64 or URL (人物头像/参考图)
   color?: string // 用于 UI 显示的颜色标识
+  type?: 'sora' | 'custom' // 角色类型：sora 角色或自定义图片角色
+  soraCharacterId?: string // Sora API 创建的角色 ID（仅当 type === 'sora' 时使用）
 }
 
 // 道具定义

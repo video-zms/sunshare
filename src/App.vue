@@ -940,6 +940,15 @@ const handleStoryboardSave = (storyboard: Storyboard) => {
   currentStoryboard.value = storyboard
   // Save to localStorage
   localStorage.setItem('storyboards', JSON.stringify(storyboards.value))
+  
+  // 同步更新关联的节点数据
+  const relatedNode = nodes.value.find(n => n.data.storyboardId === storyboard.id)
+  if (relatedNode) {
+    handleNodeUpdate(relatedNode.id, {
+      storyShots: storyboard.shots,
+      storyboardId: storyboard.id
+    })
+  }
 }
 
 const handleStoryboardAIGenerate = async (shotId: string) => {
@@ -953,18 +962,61 @@ const handleViewStoryboard = (nodeId: string) => {
   const node = nodes.value.find(n => n.id === nodeId)
   if (!node || !node.data.storyShots || node.data.storyShots.length === 0) return
 
-  // 从节点数据中恢复分镜板
-  // 注意：节点中可能没有保存完整的 scenes 和 characters，需要从已保存的分镜板中恢复
-  // 或者创建一个新的分镜板对象
-  const storyboard: Storyboard = {
-    id: `sb-node-${nodeId}`,
-    title: node.data.storyTitle || '未命名分镜板',
-    shots: node.data.storyShots || [],
-    scenes: [], // 场景和人物信息需要从其他地方恢复，或者为空数组
-    characters: [],
-    storyProps: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now()
+  // 优先从 storyboards 数组中查找完整的分镜板数据
+  let storyboard: Storyboard | null = null
+  
+  if (node.data.storyboardId) {
+    // 根据 storyboardId 查找完整的分镜板
+    storyboard = storyboards.value.find(s => s.id === node.data.storyboardId) || null
+  }
+  
+  // 如果找不到，尝试从 localStorage 加载
+  if (!storyboard && node.data.storyboardId) {
+    try {
+      const saved = localStorage.getItem('storyboards')
+      if (saved) {
+        const savedBoards: Storyboard[] = JSON.parse(saved)
+        storyboard = savedBoards.find(s => s.id === node.data.storyboardId) || null
+        // 如果找到了，更新 storyboards 数组
+        if (storyboard) {
+          const existingIndex = storyboards.value.findIndex(s => s.id === storyboard!.id)
+          if (existingIndex >= 0) {
+            storyboards.value[existingIndex] = storyboard
+          } else {
+            storyboards.value.unshift(storyboard)
+          }
+        }
+      }
+    } catch (e) {
+      console.error('加载分镜板失败:', e)
+    }
+  }
+  
+  // 如果还是找不到，尝试通过标题和分镜数量匹配（处理旧数据）
+  if (!storyboard && node.data.storyTitle) {
+    const matchingBoard = storyboards.value.find(s => 
+      s.title === node.data.storyTitle && 
+      s.shots.length === (node.data.storyShots?.length || 0)
+    )
+    if (matchingBoard) {
+      storyboard = matchingBoard
+      // 更新节点数据，建立关联
+      handleNodeUpdate(nodeId, { storyboardId: matchingBoard.id })
+    }
+  }
+  
+  // 如果还是找不到，使用节点中的数据创建分镜板（但会缺少 scenes、characters 等）
+  if (!storyboard) {
+    storyboard = {
+      id: node.data.storyboardId || `sb-node-${nodeId}`,
+      title: node.data.storyTitle || '未命名分镜板',
+      shots: node.data.storyShots || [],
+      scenes: [],
+      characters: [],
+      storyProps: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    }
   }
 
   // 设置当前分镜板并打开面板
@@ -1041,15 +1093,10 @@ const handleGenerateStoryShots = async (nodeId: string) => {
       characterIds: shot.characterIds?.map(id => charIdMap.get(id) || id) || []
     }))
 
-    // Update node with generated shots
-    handleNodeUpdate(nodeId, {
-      storyShots: storyboardShots,
-      progress: undefined
-    })
-
     // Create or update storyboard and open it
+    const storyboardId = `sb-${Date.now()}`
     const newStoryboard: Storyboard = {
-      id: `sb-${Date.now()}`,
+      id: storyboardId,
       title: node.data.storyTitle || '未命名分镜板',
       shots: storyboardShots,
       scenes: storyboardScenes,
@@ -1058,6 +1105,13 @@ const handleGenerateStoryShots = async (nodeId: string) => {
       createdAt: Date.now(),
       updatedAt: Date.now()
     }
+
+    // Update node with generated shots and storyboard ID
+    handleNodeUpdate(nodeId, {
+      storyShots: storyboardShots,
+      storyboardId: storyboardId,
+      progress: undefined
+    })
 
     // Add to storyboards list
     storyboards.value.unshift(newStoryboard)
@@ -1144,11 +1198,77 @@ const activeConnectionPath = computed(() => {
   return `M ${startX} ${startY} L ${endX} ${endY}`
 })
 
+// --- Story Nodes Data Logger ---
+const logStoryNodes = () => {
+  const storyNodes = nodes.value.filter(n => n.type === NodeType.STORY_GENERATOR)
+  if (storyNodes.length > 0) {
+    console.group('📖 故事节点数据')
+    storyNodes.forEach((node, index) => {
+      console.group(`故事节点 ${index + 1} (ID: ${node.id})`)
+      console.log('节点基本信息:', {
+        id: node.id,
+        title: node.title,
+        type: node.type,
+        status: node.status,
+        x: node.x,
+        y: node.y
+      })
+      console.log('故事数据:', {
+        storyTitle: node.data.storyTitle || '未命名',
+        storyGenre: node.data.storyGenre || '未指定',
+        story: node.data.story ? (node.data.story.length > 200 ? node.data.story.substring(0, 200) + '...' : node.data.story) : '无',
+        storyLength: node.data.story?.length || 0,
+        storyShotsCount: node.data.storyShots?.length || 0,
+        storyShots: node.data.storyShots || [],
+        progress: node.data.progress,
+        error: node.data.error
+      })
+      if (node.data.storyShots && node.data.storyShots.length > 0) {
+        console.log('分镜详情:', node.data.storyShots)
+      }
+      console.groupEnd()
+    })
+    console.groupEnd()
+  } else {
+    console.log('📖 当前没有故事节点')
+  }
+}
+
+// Watch for story nodes changes
+watch(
+  () => nodes.value.filter(n => n.type === NodeType.STORY_GENERATOR),
+  (storyNodes) => {
+    if (storyNodes.length > 0) {
+      logStoryNodes()
+    }
+  },
+  { deep: true }
+)
+
 // --- Lifecycle ---
 onMounted(() => {
   loadData()
+  
+  // 从 localStorage 加载 storyboards 数组
+  try {
+    const savedStoryboards = localStorage.getItem('storyboards')
+    if (savedStoryboards) {
+      storyboards.value = JSON.parse(savedStoryboards)
+      console.log('已加载分镜板列表:', storyboards.value.length, '个')
+    }
+  } catch (e) {
+    console.error('加载分镜板列表失败:', e)
+  }
+  
   window.addEventListener('mousemove', handleGlobalMouseMove)
   window.addEventListener('mouseup', handleGlobalMouseUp)
+  
+  // Print story nodes data after data is loaded
+  nextTick(() => {
+    setTimeout(() => {
+      logStoryNodes()
+    }, 500)
+  })
 })
 
 onUnmounted(() => {
