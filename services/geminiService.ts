@@ -5,7 +5,7 @@ import { SmartSequenceItem, VideoGenerationMode } from "../types";
 // --- Initialization ---
 
 const getClient = () => {
-  if (!process.env.API_KEY) {
+  if (!import.meta.env.VITE_API_KEY) {
     throw new Error("API Key is missing. Please select a paid API key via the Google AI Studio button.");
   }
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
