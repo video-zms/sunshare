@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { X, Images, Brush, ImageIcon, LayoutGrid, MapPin, Users, Package, Check, Loader2, Sparkles, User } from 'lucide-vue-next'
 import { ChevronDown } from 'lucide-vue-next'
+import ImageField from '../common/ImageField.vue'
 import type { StoryScene, StoryCharacter, StoryProp, ArtStyle } from '../../types'
 import { ART_STYLES } from '../../types'
 
@@ -25,6 +26,12 @@ const emit = defineEmits<{
     selectedScenes: Set<string>
     selectedCharacters: Set<string>
     selectedProps: Set<string>
+    referenceImages?: {
+      sceneReferenceImages?: Map<string, string | null> // 场景ID -> 参考图
+      characterReferenceImages?: Map<string, string | null> // 人物ID -> 参考图
+      propReferenceImages?: Map<string, string | null> // 道具ID -> 参考图
+      globalReferenceImages?: string[] // 全局参考图
+    }
   }]
 }>()
 
@@ -35,6 +42,13 @@ const batchGenerateSelectedCharacters = ref<Set<string>>(new Set())
 const batchGenerateSelectedProps = ref<Set<string>>(new Set())
 const batchSelectedModel = ref('gemini-2.5-flash-image')
 const showModelDropdown = ref(false)
+
+// 参考图管理
+const sceneReferenceImages = ref<Map<string, string | null>>(new Map())
+const characterReferenceImages = ref<Map<string, string | null>>(new Map())
+const propReferenceImages = ref<Map<string, string | null>>(new Map())
+const globalReferenceImages = ref<string[]>([])
+const showReferenceImages = ref(false)
 
 const imageGenModels = [
   { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash-image' },
@@ -49,6 +63,18 @@ watch(() => props.isOpen, (isOpen) => {
     batchGenerateSelectedCharacters.value = new Set(props.characters.map(c => c.id))
     batchGenerateSelectedProps.value = new Set(props.storyProps.map(p => p.id))
     showModelDropdown.value = false
+    // 初始化参考图（使用现有图片作为默认参考图）
+    sceneReferenceImages.value = new Map(
+      props.scenes.map(s => [s.id, s.image || null])
+    )
+    characterReferenceImages.value = new Map(
+      props.characters.map(c => [c.id, c.image || null])
+    )
+    propReferenceImages.value = new Map(
+      props.storyProps.map(p => [p.id, p.image || null])
+    )
+    globalReferenceImages.value = []
+    showReferenceImages.value = false
   }
 })
 
@@ -118,14 +144,76 @@ const batchGenerateItemCount = computed(() => {
 })
 
 const handleGenerate = () => {
+  // 构建参考图数据
+  const referenceImages: {
+    sceneReferenceImages?: Map<string, string | null>
+    characterReferenceImages?: Map<string, string | null>
+    propReferenceImages?: Map<string, string | null>
+    globalReferenceImages?: string[]
+  } = {}
+  
+  // 只包含有参考图的项
+  const sceneRefs = new Map<string, string | null>()
+  sceneReferenceImages.value.forEach((img, id) => {
+    if (img && batchGenerateSelectedScenes.value.has(id)) {
+      sceneRefs.set(id, img)
+    }
+  })
+  if (sceneRefs.size > 0) referenceImages.sceneReferenceImages = sceneRefs
+  
+  const charRefs = new Map<string, string | null>()
+  characterReferenceImages.value.forEach((img, id) => {
+    if (img && batchGenerateSelectedCharacters.value.has(id)) {
+      charRefs.set(id, img)
+    }
+  })
+  if (charRefs.size > 0) referenceImages.characterReferenceImages = charRefs
+  
+  const propRefs = new Map<string, string | null>()
+  propReferenceImages.value.forEach((img, id) => {
+    if (img && batchGenerateSelectedProps.value.has(id)) {
+      propRefs.set(id, img)
+    }
+  })
+  if (propRefs.size > 0) referenceImages.propReferenceImages = propRefs
+  
+  if (globalReferenceImages.value.length > 0) {
+    referenceImages.globalReferenceImages = globalReferenceImages.value
+  }
+  
   emit('generate', {
     type: batchGenerateType.value,
     artStyle: batchSelectedArtStyle.value,
     model: batchSelectedModel.value,
     selectedScenes: batchGenerateSelectedScenes.value,
     selectedCharacters: batchGenerateSelectedCharacters.value,
-    selectedProps: batchGenerateSelectedProps.value
+    selectedProps: batchGenerateSelectedProps.value,
+    referenceImages: Object.keys(referenceImages).length > 0 ? referenceImages : undefined
   })
+}
+
+const handleSceneReferenceImageChange = (sceneId: string, image: string | null) => {
+  sceneReferenceImages.value.set(sceneId, image)
+}
+
+const handleCharacterReferenceImageChange = (characterId: string, image: string | null) => {
+  characterReferenceImages.value.set(characterId, image)
+}
+
+const handlePropReferenceImageChange = (propId: string, image: string | null) => {
+  propReferenceImages.value.set(propId, image)
+}
+
+const handleGlobalReferenceImageChange = (image: string | null) => {
+  if (image) {
+    if (!globalReferenceImages.value.includes(image)) {
+      globalReferenceImages.value.push(image)
+    }
+  }
+}
+
+const removeGlobalReferenceImage = (index: number) => {
+  globalReferenceImages.value.splice(index, 1)
 }
 </script>
 
@@ -221,6 +309,141 @@ const handleGenerate = () => {
                 </div>
               </Transition>
             </div>
+          </div>
+
+          <!-- 参考图设置 -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <ImageIcon :size="16" class="text-amber-400" />
+                <span class="text-sm font-medium text-white">参考图（可选）</span>
+              </div>
+              <button
+                @click="showReferenceImages = !showReferenceImages"
+                class="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+              >
+                {{ showReferenceImages ? '收起' : '展开' }}
+              </button>
+            </div>
+            <Transition
+              enter-active-class="transition-all duration-200"
+              enter-from-class="opacity-0 max-h-0"
+              enter-to-class="opacity-100 max-h-[500px]"
+              leave-active-class="transition-all duration-200"
+              leave-from-class="opacity-100 max-h-[500px]"
+              leave-to-class="opacity-0 max-h-0"
+            >
+              <div v-if="showReferenceImages" class="space-y-4 overflow-hidden">
+                <!-- 场景参考图 -->
+                <div v-if="batchGenerateType === 'scenes' || batchGenerateType === 'all'">
+                  <div class="text-xs text-slate-400 mb-2">场景参考图</div>
+                  <div class="grid grid-cols-2 gap-2 max-h-[120px] overflow-y-auto custom-scrollbar pr-1">
+                    <div
+                      v-for="scene in scenes.filter(s => batchGenerateSelectedScenes.has(s.id))"
+                      :key="scene.id"
+                      class="space-y-1"
+                    >
+                      <div class="text-[10px] text-slate-500 truncate">{{ scene.name }}</div>
+                      <ImageField
+                        :image="sceneReferenceImages.get(scene.id) || null"
+                        @change="(img) => handleSceneReferenceImageChange(scene.id, img)"
+                        width="100%"
+                        height="60px"
+                        upload-text="上传"
+                        :disable-generate="true"
+                        :disable-preview="false"
+                        :disable-crop="false"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 人物参考图 -->
+                <div v-if="batchGenerateType === 'characters' || batchGenerateType === 'all'">
+                  <div class="text-xs text-slate-400 mb-2">人物参考图</div>
+                  <div class="grid grid-cols-2 gap-2 max-h-[120px] overflow-y-auto custom-scrollbar pr-1">
+                    <div
+                      v-for="char in characters.filter(c => batchGenerateSelectedCharacters.has(c.id))"
+                      :key="char.id"
+                      class="space-y-1"
+                    >
+                      <div class="text-[10px] text-slate-500 truncate">{{ char.name }}</div>
+                      <ImageField
+                        :image="characterReferenceImages.get(char.id) || null"
+                        @change="(img) => handleCharacterReferenceImageChange(char.id, img)"
+                        width="100%"
+                        height="60px"
+                        upload-text="上传"
+                        :disable-generate="true"
+                        :disable-preview="false"
+                        :disable-crop="false"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 道具参考图 -->
+                <div v-if="batchGenerateType === 'props' || batchGenerateType === 'all'">
+                  <div class="text-xs text-slate-400 mb-2">道具参考图</div>
+                  <div class="grid grid-cols-2 gap-2 max-h-[120px] overflow-y-auto custom-scrollbar pr-1">
+                    <div
+                      v-for="prop in storyProps.filter(p => batchGenerateSelectedProps.has(p.id))"
+                      :key="prop.id"
+                      class="space-y-1"
+                    >
+                      <div class="text-[10px] text-slate-500 truncate">{{ prop.name }}</div>
+                      <ImageField
+                        :image="propReferenceImages.get(prop.id) || null"
+                        @change="(img) => handlePropReferenceImageChange(prop.id, img)"
+                        width="100%"
+                        height="60px"
+                        upload-text="上传"
+                        :disable-generate="true"
+                        :disable-preview="false"
+                        :disable-crop="false"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 全局参考图 -->
+                <div>
+                  <div class="text-xs text-slate-400 mb-2">全局参考图（应用于所有生成项）</div>
+                  <div class="grid grid-cols-3 gap-2 mb-2">
+                    <div
+                      v-for="(img, index) in globalReferenceImages"
+                      :key="index"
+                      class="relative group"
+                    >
+                      <div class="rounded-lg overflow-hidden border border-amber-500/30 bg-white/5">
+                        <img 
+                          :src="img" 
+                          alt="参考图"
+                          class="w-full h-20 object-cover"
+                        />
+                      </div>
+                      <button
+                        @click="removeGlobalReferenceImage(index)"
+                        class="absolute top-1 right-1 p-1 bg-black/60 hover:bg-red-500/80 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="移除"
+                      >
+                        <X :size="12" />
+                      </button>
+                    </div>
+                  </div>
+                  <ImageField
+                    :image="null"
+                    @change="handleGlobalReferenceImageChange"
+                    width="100%"
+                    height="60px"
+                    upload-text="添加全局参考图"
+                    :disable-generate="true"
+                    :disable-preview="false"
+                    :disable-crop="false"
+                  />
+                </div>
+              </div>
+            </Transition>
           </div>
 
           <!-- 生成类型选择 -->
@@ -400,18 +623,18 @@ const handleGenerate = () => {
               <div class="flex items-center gap-2">
                 <Package :size="16" class="text-orange-400" />
                 <span class="text-sm font-medium text-white">选择道具</span>
-                <span class="text-xs text-slate-500">({{ batchGenerateSelectedProps.size }}/{{ props.length }})</span>
+                <span class="text-xs text-slate-500">({{ batchGenerateSelectedProps.size }}/{{ storyProps.length }})</span>
               </div>
               <button
                 @click="toggleAllProps"
                 class="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
               >
-                {{ batchGenerateSelectedProps.size === props.length ? '取消全选' : '全选' }}
+                {{ batchGenerateSelectedProps.size === storyProps.length ? '取消全选' : '全选' }}
               </button>
             </div>
             <div class="grid grid-cols-3 gap-2 max-h-[180px] overflow-y-auto custom-scrollbar pr-1">
               <div
-                v-for="prop in props"
+                v-for="prop in storyProps"
                 :key="prop.id"
                 @click="toggleBatchGenerateProp(prop.id)"
                 :class="[
@@ -448,7 +671,7 @@ const handleGenerate = () => {
                   <Check v-if="batchGenerateSelectedProps.has(prop.id)" :size="10" class="text-white" />
                 </div>
               </div>
-              <div v-if="props.length === 0" class="col-span-3 text-center py-8 text-slate-600 text-sm">
+              <div v-if="storyProps.length === 0" class="col-span-3 text-center py-8 text-slate-600 text-sm">
                 暂无道具
               </div>
             </div>

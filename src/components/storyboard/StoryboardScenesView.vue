@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Plus, Trash2 } from 'lucide-vue-next'
 import ImageField from '../common/ImageField.vue'
+import PromptTextarea from '../common/PromptTextarea.vue'
 import type { StoryScene } from '../../types'
 
 interface Props {
@@ -16,7 +17,7 @@ const emit = defineEmits<{
   'delete-scene': [id: string]
   'update-scene': [scene: StoryScene]
   'image-upload': [e: Event, sceneId: string]
-  'generate-image': [sceneId: string]
+  'generate-image': [sceneId: string, referenceImages?: string[]]
 }>()
 
 const handleImageChange = (sceneId: string, image: string | null) => {
@@ -53,8 +54,9 @@ const handleSceneUpdate = (scene: StoryScene, field: keyof StoryScene, value: an
           accept="image/*"
           custom-class="w-full h-full"
           @upload="(e) => handleImageUpload(e, scene.id)"
-          @generate="emit('generate-image', scene.id)"
+          @generate="(refImages) => emit('generate-image', scene.id, refImages)"
           @change="(img) => handleImageChange(scene.id, img)"
+          :reference-images="scene.image ? [scene.image] : []"
         />
         <!-- Color indicator -->
         <div
@@ -92,13 +94,15 @@ const handleSceneUpdate = (scene: StoryScene, field: keyof StoryScene, value: an
             </div>
           </div>
         </div>
-        <textarea
-          :value="scene.description"
-          @input="handleSceneUpdate(scene, 'description', ($event.target as HTMLTextAreaElement).value)"
-          class="w-full bg-white/5 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-emerald-500/50"
+        <PromptTextarea
+          :model-value="scene.description"
+          @update:model-value="(value: string) => handleSceneUpdate(scene, 'description', value)"
           placeholder="场景描述..."
-          rows="2"
-          @mousedown.stop
+          :rows="2"
+          :auto-resize="true"
+          min-height="48px"
+          max-height="120px"
+          custom-class="w-full"
         />
       </div>
 

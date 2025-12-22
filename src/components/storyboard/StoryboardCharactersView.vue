@@ -16,7 +16,7 @@ const emit = defineEmits<{
   'delete-character': [id: string]
   'update-character': [character: StoryCharacter]
   'image-upload': [e: Event, characterId: string]
-  'generate-image': [characterId: string]
+  'generate-image': [characterId: string, referenceImages?: string[]]
   'create-sora-character': [characterId: string]
 }>()
 
@@ -63,8 +63,9 @@ const handleTypeChange = (char: StoryCharacter, type: 'sora' | 'custom') => {
           accept="image/*"
           custom-class="w-full h-full"
           @upload="(e) => handleImageUpload(e, char.id)"
-          @generate="emit('generate-image', char.id)"
+          @generate="(refImages) => emit('generate-image', char.id, refImages)"
           @change="(img) => handleImageChange(char.id, img)"
+          :reference-images="char.image ? [char.image] : []"
         />
         <!-- Color indicator -->
         <div
@@ -143,7 +144,7 @@ const handleTypeChange = (char: StoryCharacter, type: 'sora' | 'custom') => {
         <!-- Generate Image Button -->
         <button
           v-if="char.type !== 'sora' || !char.soraCharacterId"
-          @click.stop="emit('generate-image', char.id)"
+          @click.stop="emit('generate-image', char.id, char.image ? [char.image] : undefined)"
           :disabled="generatingCharacterIds.has(char.id)"
           class="w-full mt-2 px-2 py-1.5 text-[11px] bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
         >

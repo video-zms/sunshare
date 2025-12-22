@@ -174,6 +174,7 @@ export interface Storyboard {
   scenes: StoryScene[] // 场景列表
   characters: StoryCharacter[] // 人物列表
   storyProps?: StoryProp[] // 道具列表
+  artStyle?: ArtStyle // 故事板风格（用于生成图片和视频）
   createdAt: number
   updatedAt: number
 }
@@ -320,6 +321,13 @@ export const ART_STYLES: ArtStyle[] = [
     description: '美式漫画风格',
     promptSuffix: ', comic book style, bold lines, dynamic composition, halftone dots, superhero aesthetic',
     previewColor: '#f97316'
+  },
+  {
+    id: 'shinkai',
+    name: '新海诚风格',
+    description: '新海诚动画电影风格',
+    promptSuffix: ', Makoto Shinkai style, anime movie aesthetic, vibrant colors, detailed backgrounds, dramatic sky and clouds, cinematic lighting, emotional atmosphere, high quality animation',
+    previewColor: '#3b82f6'
   }
 ]
 

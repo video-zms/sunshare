@@ -16,7 +16,7 @@ const emit = defineEmits<{
   'delete-prop': [id: string]
   'update-prop': [prop: StoryProp]
   'image-upload': [e: Event, propId: string]
-  'generate-image': [propId: string]
+  'generate-image': [propId: string, referenceImages?: string[]]
 }>()
 
 const handleImageChange = (propId: string, image: string | null) => {
@@ -53,8 +53,9 @@ const handlePropUpdate = (prop: StoryProp, field: keyof StoryProp, value: any) =
           accept="image/*"
           custom-class="w-full h-full"
           @upload="(e) => handleImageUpload(e, prop.id)"
-          @generate="emit('generate-image', prop.id)"
+          @generate="(refImages) => emit('generate-image', prop.id, refImages)"
           @change="(img) => handleImageChange(prop.id, img)"
+          :reference-images="prop.image ? [prop.image] : []"
         />
         <!-- Color indicator -->
         <div

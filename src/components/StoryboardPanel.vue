@@ -18,6 +18,7 @@ import BatchSceneDialog from './storyboard/BatchSceneDialog.vue'
 import BatchCharactersDialog from './storyboard/BatchCharactersDialog.vue'
 import BatchPropsDialog from './storyboard/BatchPropsDialog.vue'
 import BatchGenerateDialog from './storyboard/BatchGenerateDialog.vue'
+import GenerateConfirmDialog from './storyboard/GenerateConfirmDialog.vue'
 import SelectDropdown from './storyboard/SelectDropdown.vue'
 
 interface Props {
@@ -39,10 +40,14 @@ const shots = ref<StoryboardShot[]>([])
 const scenes = ref<StoryScene[]>([])
 const characters = ref<StoryCharacter[]>([])
 const storyProps = ref<StoryProp[]>([])
+const storyboardArtStyle = ref<ArtStyle>(ART_STYLES[0]) // 故事板风格
+const customStyles = ref<ArtStyle[]>([]) // 自定义风格
+const allArtStyles = computed(() => [...ART_STYLES, ...customStyles.value]) // 所有可用风格
 const viewMode = ref<'list' | 'grid'>('list')
 const selectedShotIds = ref<Set<string>>(new Set())
 const draggedShotId = ref<string | null>(null)
 const isConfigOpen = ref(false)
+const isStyleDropdownOpen = ref(false)
 
 // 分镜板 ID，用于持久化存储
 const storyboardId = ref<string | null>(null)
@@ -77,6 +82,13 @@ const batchGenerateSelectedProps = ref<Set<string>>(new Set())
 const isBatchGenerating = ref(false)
 const batchGenerateProgress = ref({ completed: 0, total: 0, currentItem: '' })
 const batchSelectedModel = ref('gemini-2.5-flash-image')
+// 参考图数据
+const batchReferenceImages = ref<{
+  sceneReferenceImages?: Map<string, string | null>
+  characterReferenceImages?: Map<string, string | null>
+  propReferenceImages?: Map<string, string | null>
+  globalReferenceImages?: string[]
+}>()
 
 // 单独生成状态
 const generatingSceneIds = ref<Set<string>>(new Set())
@@ -84,6 +96,11 @@ const generatingCharacterIds = ref<Set<string>>(new Set())
 const generatingPropIds = ref<Set<string>>(new Set())
 const generatingShotIds = ref<Set<string>>(new Set())
 const showModelDropdown = ref(false)
+
+// 生成确认对话框状态
+const isGenerateConfirmOpen = ref(false)
+const confirmGenerateType = ref<'image' | 'video'>('image')
+const confirmShotId = ref<string | null>(null)
 
 // 可用的图片生成模型
 const imageGenModels = [
@@ -135,6 +152,7 @@ const autoSave = async () => {
         scenes: scenes.value,
         characters: characters.value,
         storyProps: storyProps.value,
+        artStyle: storyboardArtStyle.value,
         createdAt: props.storyboard?.createdAt || Date.now(),
         updatedAt: Date.now()
       }
@@ -157,6 +175,11 @@ const loadSavedData = async (id: string) => {
       scenes.value = saved.scenes || []
       characters.value = saved.characters || []
       storyProps.value = saved.storyProps || []
+      // 加载故事板风格（从所有风格中查找）
+      if (saved.artStyle) {
+        const savedStyle = allArtStyles.value.find(s => s.id === saved.artStyle?.id) || saved.artStyle
+        storyboardArtStyle.value = savedStyle
+      }
       console.log('已恢复保存的分镜数据', saved)
       return true
     }
@@ -166,8 +189,23 @@ const loadSavedData = async (id: string) => {
   return false
 }
 
+// 加载自定义风格
+const loadCustomStyles = async () => {
+  try {
+    const saved = await loadFromStorage<ArtStyle[]>('custom_art_styles')
+    if (saved) {
+      customStyles.value = saved
+    }
+  } catch (error) {
+    console.error('加载自定义风格失败:', error)
+  }
+}
+
 // Initialize from props
 watch(() => props.storyboard, async (newStoryboard) => {
+  // 加载自定义风格
+  await loadCustomStyles()
+  
   if (newStoryboard) {
     storyboardId.value = newStoryboard.id
     // 先尝试加载保存的数据，如果没有则使用 props 中的数据
@@ -178,6 +216,19 @@ watch(() => props.storyboard, async (newStoryboard) => {
       scenes.value = [...(newStoryboard.scenes || [])]
       characters.value = [...(newStoryboard.characters || [])]
       storyProps.value = [...(newStoryboard.storyProps || [])]
+      // 加载故事板风格（从所有风格中查找）
+      if (newStoryboard.artStyle) {
+        const savedStyle = allArtStyles.value.find(s => s.id === newStoryboard.artStyle?.id) || newStoryboard.artStyle
+        storyboardArtStyle.value = savedStyle
+      }
+    } else {
+      // 如果从保存数据加载，也需要更新风格引用
+      if (storyboardArtStyle.value) {
+        const savedStyle = allArtStyles.value.find(s => s.id === storyboardArtStyle.value.id)
+        if (savedStyle) {
+          storyboardArtStyle.value = savedStyle
+        }
+      }
     }
   } else {
     // 创建新的分镜板 ID
@@ -193,9 +244,20 @@ watch(() => props.storyboard, async (newStoryboard) => {
 
 // 当面板打开时，尝试加载保存的数据（确保使用最新的保存数据）
 watch(() => props.isOpen, async (isOpen) => {
-  if (isOpen && storyboardId.value) {
-    // 如果已有保存的数据，优先使用保存的数据
-    await loadSavedData(storyboardId.value)
+  if (isOpen) {
+    // 加载自定义风格
+    await loadCustomStyles()
+    if (storyboardId.value) {
+      // 如果已有保存的数据，优先使用保存的数据
+      await loadSavedData(storyboardId.value)
+      // 更新风格引用
+      if (storyboardArtStyle.value) {
+        const savedStyle = allArtStyles.value.find(s => s.id === storyboardArtStyle.value.id)
+        if (savedStyle) {
+          storyboardArtStyle.value = savedStyle
+        }
+      }
+    }
   }
 })
 
@@ -908,7 +970,7 @@ const batchGenerateItemCount = computed(() => {
 })
 
 // 单独生成场景图片
-const generateSceneImage = async (sceneId: string) => {
+const generateSceneImage = async (sceneId: string, referenceImages?: string[]) => {
   const scene = scenes.value.find(s => s.id === sceneId)
   if (!scene) return
   
@@ -919,10 +981,12 @@ const generateSceneImage = async (sceneId: string) => {
         id: scene.id,
         type: 'scene',
         name: scene.name,
-        description: scene.description
+        description: scene.description,
+        referenceImages: referenceImages
       },
-      batchSelectedArtStyle.value,
-      batchSelectedModel.value
+      storyboardArtStyle.value, // 使用故事板风格
+      batchSelectedModel.value,
+      referenceImages
     )
     scene.image = image
   } catch (error: any) {
@@ -934,7 +998,7 @@ const generateSceneImage = async (sceneId: string) => {
 }
 
 // 单独生成人物图片
-const generateCharacterImage = async (characterId: string) => {
+const generateCharacterImage = async (characterId: string, referenceImages?: string[]) => {
   const char = characters.value.find(c => c.id === characterId)
   if (!char) return
   
@@ -945,10 +1009,12 @@ const generateCharacterImage = async (characterId: string) => {
         id: char.id,
         type: 'character',
         name: char.name,
-        description: char.description
+        description: char.description,
+        referenceImages: referenceImages
       },
-      batchSelectedArtStyle.value,
-      batchSelectedModel.value
+      storyboardArtStyle.value, // 使用故事板风格
+      batchSelectedModel.value,
+      referenceImages
     )
     char.image = image
   } catch (error: any) {
@@ -960,7 +1026,7 @@ const generateCharacterImage = async (characterId: string) => {
 }
 
 // 单独生成道具图片
-const generatePropImage = async (propId: string) => {
+const generatePropImage = async (propId: string, referenceImages?: string[]) => {
   const prop = storyProps.value.find(p => p.id === propId)
   if (!prop) return
   
@@ -972,10 +1038,12 @@ const generatePropImage = async (propId: string) => {
         id: prop.id,
         type: 'character', // 使用character类型，因为道具也需要白色背景和细节展示
         name: prop.name,
-        description: `Prop object: ${prop.description || prop.name}. Product photography style, white background, detailed prop reference, isolated object, professional product shot`
+        description: `Prop object: ${prop.description || prop.name}. Product photography style, white background, detailed prop reference, isolated object, professional product shot`,
+        referenceImages: referenceImages
       },
-      batchSelectedArtStyle.value,
-      batchSelectedModel.value
+      storyboardArtStyle.value, // 使用故事板风格
+      batchSelectedModel.value,
+      referenceImages
     )
     prop.image = image
   } catch (error: any) {
@@ -986,49 +1054,116 @@ const generatePropImage = async (propId: string) => {
   }
 }
 
-// 生成分镜图片
-const generateShotImageForShot = async (shotId: string) => {
+// 显示生成确认对话框
+const showGenerateConfirm = (shotId: string, type: 'image' | 'video') => {
+  confirmShotId.value = shotId
+  confirmGenerateType.value = type
+  isGenerateConfirmOpen.value = true
+}
+
+// 确认生成后执行实际生成
+const handleConfirmGenerate = async (data?: {
+  prompt: string
+  sceneReferenceImage?: string | null
+  characterReferenceImages?: Array<{ id: string, image?: string | null }>
+  propReferenceImages?: Array<{ id: string, image?: string | null }>
+  otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }>
+}) => {
+  if (!confirmShotId.value) return
+  
+  if (confirmGenerateType.value === 'image') {
+    await executeGenerateShotImage(confirmShotId.value, data)
+  } else {
+    await executeGenerateShotVideo(confirmShotId.value, data)
+  }
+}
+
+// 实际执行生成分镜图片
+const executeGenerateShotImage = async (
+  shotId: string,
+  editedData?: {
+    prompt: string
+    sceneReferenceImage?: string | null
+    characterReferenceImages?: Array<{ id: string, image?: string | null }>
+    propReferenceImages?: Array<{ id: string, image?: string | null }>
+    otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }>
+  }
+) => {
   const shot = shots.value.find(s => s.id === shotId)
   if (!shot) return
   
   generatingShotIds.value.add(shotId)
   try {
-    // 获取关联的场景信息（包含参考图）
+    // 使用编辑后的提示词，如果没有则使用默认值
+    const prompt = editedData?.prompt ?? (shot.description || '')
+    
+    // 获取关联的场景信息（使用编辑后的参考图）
     const scene = shot.sceneId ? getSceneById(shot.sceneId) : null
     const sceneInfo = scene ? {
       name: scene.name,
       description: scene.description,
-      image: scene.image // 传递场景参考图
+      image: editedData?.sceneReferenceImage !== undefined 
+        ? (editedData.sceneReferenceImage || undefined)
+        : (scene.image || undefined) // 如果编辑了则使用编辑后的，否则使用原始值，null 转为 undefined
     } : undefined
     
-    // 获取关联的人物信息（包含参考图）
+    // 获取关联的人物信息（使用编辑后的参考图）
     const shotCharacters = shot.characterIds && shot.characterIds.length > 0
-      ? getCharactersByIds(shot.characterIds).map(char => ({
-          name: char.name,
-          description: char.description,
-          image: char.image // 传递角色参考图
-        }))
+      ? getCharactersByIds(shot.characterIds).map(char => {
+          // 查找是否有编辑后的参考图
+          const editedCharImage = editedData?.characterReferenceImages?.find(
+            c => c.id === char.id
+          )?.image
+          
+          return {
+            name: char.name,
+            description: char.description,
+            image: editedCharImage !== undefined 
+              ? (editedCharImage || undefined)
+              : (char.image || undefined) // 如果编辑了则使用编辑后的，否则使用原始值，null 转为 undefined
+          }
+        })
       : undefined
     
-    // 获取关联的道具信息（包含参考图）
+    // 获取关联的道具信息（使用编辑后的参考图）
     const shotProps = shot.propIds && shot.propIds.length > 0
-      ? getPropsByIds(shot.propIds).map(prop => ({
-          name: prop.name,
-          description: prop.description,
-          image: prop.image // 传递道具参考图
-        }))
+      ? getPropsByIds(shot.propIds).map(prop => {
+          // 查找是否有编辑后的参考图
+          const editedPropImage = editedData?.propReferenceImages?.find(
+            p => p.id === prop.id
+          )?.image
+          
+          return {
+            name: prop.name,
+            description: prop.description,
+            image: editedPropImage !== undefined 
+              ? (editedPropImage || undefined)
+              : (prop.image || undefined) // 如果编辑了则使用编辑后的，否则使用原始值，null 转为 undefined
+          }
+        })
       : undefined
     
-    // 生成分镜图片（现在会传递参考图）
+    // 收集其他分镜图作为参考图（用于图片生成）
+    const otherShotReferenceImages: string[] = []
+    if (editedData?.otherShotImages && editedData.otherShotImages.length > 0) {
+      editedData.otherShotImages.forEach(otherShot => {
+        if (otherShot.image) {
+          otherShotReferenceImages.push(otherShot.image)
+        }
+      })
+    }
+    
+    // 生成分镜图片（使用编辑后的提示词和参考图，使用故事板风格）
     const image = await generateShotImage(
-      shot.description || '',
+      prompt,
       sceneInfo,
       shotCharacters,
       shot.sceneType,
       shot.cameraMovement,
-      batchSelectedArtStyle.value,
+      storyboardArtStyle.value, // 使用故事板风格
       batchSelectedModel.value,
-      shotProps
+      shotProps,
+      otherShotReferenceImages.length > 0 ? otherShotReferenceImages : undefined // 传递其他分镜图
     )
     
     shot.sceneImage = image
@@ -1040,8 +1175,22 @@ const generateShotImageForShot = async (shotId: string) => {
   }
 }
 
-// 生成分镜视频
-const generateShotVideoForShot = async (shotId: string) => {
+// 生成分镜图片（显示确认对话框）
+const generateShotImageForShot = (shotId: string) => {
+  showGenerateConfirm(shotId, 'image')
+}
+
+// 实际执行生成分镜视频
+const executeGenerateShotVideo = async (
+  shotId: string,
+  editedData?: {
+    prompt: string
+    sceneReferenceImage?: string | null
+    characterReferenceImages?: Array<{ id: string, image?: string | null }>
+    propReferenceImages?: Array<{ id: string, image?: string | null }>
+    otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }>
+  }
+) => {
   const shot = shots.value.find(s => s.id === shotId)
   if (!shot) return
   
@@ -1092,9 +1241,14 @@ const generateShotVideoForShot = async (shotId: string) => {
           soraCharacterIds.push(char.soraCharacterId)
           promptParts.push(`Sora角色[${char.soraCharacterId}]: ${char.name}. ${char.description || ''}`)
         } else {
-          // 自定义图片角色：收集图片作为参考
-          if (char.image) {
-            customCharacterImages.push(char.image)
+          // 自定义图片角色：收集图片作为参考（使用编辑后的参考图）
+          const editedCharImage = editedData?.characterReferenceImages?.find(
+            c => c.id === char.id
+          )?.image
+          
+          const charImage = editedCharImage !== undefined ? editedCharImage : char.image
+          if (charImage) {
+            customCharacterImages.push(charImage)
           }
           promptParts.push(`人物: ${char.name}. ${char.description || ''}`)
         }
@@ -1108,33 +1262,95 @@ const generateShotVideoForShot = async (shotId: string) => {
       promptParts.push(`道具: ${propNames}`)
     }
     
-    // 添加分镜描述
-    if (shot.description) {
-      promptParts.push(`画面描述: ${shot.description}`)
+    // 如果用户编辑了提示词，直接使用编辑后的完整提示词（已包含所有分镜信息：描述、景别、运镜、台词等）
+    // 否则，分别添加各个部分
+    if (editedData?.prompt && editedData.prompt.trim()) {
+      // 用户编辑了提示词，直接使用（提示词已包含描述、景别、运镜、台词等所有信息）
+      promptParts.push(editedData.prompt)
+    } else {
+      // 没有编辑，使用原来的逻辑分别添加各个部分
+      // 添加分镜描述
+      if (shot.description) {
+        promptParts.push(`画面描述: ${shot.description}`)
+      }
+      
+      // 添加景别和运镜信息
+      if (shot.sceneType) {
+        promptParts.push(`景别: ${shot.sceneType}`)
+      }
+      if (shot.cameraMovement) {
+        promptParts.push(`运镜: ${shot.cameraMovement}`)
+      }
+      
+      // 添加台词（如果有）
+      if (shot.dialogue) {
+        promptParts.push(`台词: ${shot.dialogue}`)
+      }
     }
     
-    // 添加景别和运镜信息
-    if (shot.sceneType) {
-      promptParts.push(`景别: ${shot.sceneType}`)
-    }
-    if (shot.cameraMovement) {
-      promptParts.push(`运镜: ${shot.cameraMovement}`)
+    // 获取参考图（优先使用编辑后的场景参考图，然后是分镜图）
+    const referenceImage = editedData?.sceneReferenceImage ?? shot.sceneImage ?? null
+    
+    // 收集所有参考图片（支持多张）
+    const inputImages: string[] = []
+    
+    // 1. 优先添加分镜图（如果存在）
+    if (shot.sceneImage) {
+      inputImages.push(shot.sceneImage)
     }
     
-    // 添加台词（如果有）
-    if (shot.dialogue) {
-      promptParts.push(`台词: ${shot.dialogue}`)
+    // 2. 添加场景参考图（如果存在且与分镜图不同）
+    if (editedData?.sceneReferenceImage && editedData.sceneReferenceImage !== shot.sceneImage) {
+      inputImages.push(editedData.sceneReferenceImage)
+    }
+    
+    // 3. 添加角色参考图（如果有多个，全部添加）
+    if (customCharacterImages.length > 0) {
+      inputImages.push(...customCharacterImages)
+    }
+    
+    // 4. 添加其他分镜的分镜图（如果选择了）
+    if (editedData?.otherShotImages && editedData.otherShotImages.length > 0) {
+      editedData.otherShotImages.forEach(otherShot => {
+        if (!inputImages.includes(otherShot.image)) {
+          inputImages.push(otherShot.image)
+        }
+      })
+    }
+    
+    // 在提示词中说明使用的参考图类型
+    const hasOtherShotImages = editedData?.otherShotImages && editedData.otherShotImages.length > 0
+    const otherShotNumbers = hasOtherShotImages && editedData.otherShotImages
+      ? editedData.otherShotImages.map((s: { shotId: string, shotNumber: number, image: string }) => s.shotNumber).join('、')
+      : ''
+    
+    if (shot.sceneImage && customCharacterImages.length > 0 && hasOtherShotImages) {
+      promptParts.push(`基于提供的分镜图、角色参考图和其他分镜图（镜${otherShotNumbers}）生成视频，保持画面构图、场景和角色外观的视觉一致性`)
+    } else if (shot.sceneImage && hasOtherShotImages) {
+      promptParts.push(`基于提供的分镜图和其他分镜图（镜${otherShotNumbers}）生成视频，保持画面构图、场景和角色的视觉一致性`)
+    } else if (shot.sceneImage && customCharacterImages.length > 0) {
+      promptParts.push('基于提供的分镜图和角色参考图生成视频，保持画面构图、场景和角色外观的视觉一致性')
+    } else if (shot.sceneImage) {
+      // 使用分镜图
+      promptParts.push('基于提供的分镜图生成视频，保持画面构图、场景和角色的视觉一致性')
+    } else if (customCharacterImages.length > 0) {
+      // 使用角色参考图
+      promptParts.push('基于提供的角色参考图生成视频，保持角色外观的视觉一致性')
+    } else if (editedData?.sceneReferenceImage) {
+      // 使用编辑后的场景参考图
+      promptParts.push('基于提供的场景参考图生成视频，保持场景环境的视觉一致性')
+    } else if (referenceImage) {
+      // 使用场景参考图或分镜图（兜底情况）
+      promptParts.push('基于提供的参考图生成视频，保持视觉一致性')
+    }
+    
+    // 添加故事板风格提示词
+    if (storyboardArtStyle.value.promptSuffix) {
+      promptParts.push(`风格: ${storyboardArtStyle.value.name}. ${storyboardArtStyle.value.promptSuffix}`)
     }
     
     // 组合提示词
     const prompt = promptParts.join('. ')
-    
-    // 获取分镜图（如果有）
-    const referenceImage = shot.sceneImage || null
-    
-    // 优先使用自定义角色的图片作为参考图（如果有多个，使用第一个）
-    // 如果没有自定义角色图片，则使用分镜图
-    const inputImage = customCharacterImages.length > 0 ? customCharacterImages[0] : referenceImage
     
     // 调用视频生成 API（不等待完成，返回任务ID后轮询）
     const result = await generateVideoWithMultipart(prompt, {
@@ -1142,8 +1358,9 @@ const generateShotVideoForShot = async (shotId: string) => {
       size: '720x1280',
       seconds: shot.duration || 15,
       pollUntilComplete: false, // 不在这里等待，而是启动后台轮询
-      inputImage: inputImage, // 传递参考图片（优先使用自定义角色图片）
-      characterIds: soraCharacterIds.length > 0 ? soraCharacterIds : undefined // 传递 Sora 角色 ID
+      inputImages: inputImages.length > 0 ? inputImages : undefined, // 传递多张参考图片（推荐方式）
+      inputImage: inputImages.length > 0 ? inputImages[0] : undefined, // 向后兼容：单个图片
+      characterIds: soraCharacterIds.length > 0 ? soraCharacterIds : undefined // 传递 Sora 角色 ID（如果 API 支持）
     })
     
     // 保存任务ID
@@ -1169,6 +1386,26 @@ const generateShotVideoForShot = async (shotId: string) => {
   } finally {
     generatingShotIds.value.delete(shotId)
   }
+}
+
+// 生成分镜视频（显示确认对话框）
+const generateShotVideoForShot = (shotId: string) => {
+  const shot = shots.value.find(s => s.id === shotId)
+  if (!shot) return
+  
+  // 防止重复生成
+  if (generatingShotIds.value.has(shotId)) {
+    return
+  }
+  
+  // 如果已经有正在进行的任务，提示用户
+  if (shot.videoTaskId && shot.videoGeneratingStatus && 
+      (shot.videoGeneratingStatus === 'queued' || shot.videoGeneratingStatus === 'processing')) {
+    console.log('视频生成任务正在进行中，任务ID:', shot.videoTaskId)
+    return
+  }
+  
+  showGenerateConfirm(shotId, 'video')
 }
 
 // 轮询视频生成任务
@@ -1220,6 +1457,12 @@ const handleBatchGenerate = async (config: {
   selectedScenes: Set<string>
   selectedCharacters: Set<string>
   selectedProps: Set<string>
+  referenceImages?: {
+    sceneReferenceImages?: Map<string, string | null>
+    characterReferenceImages?: Map<string, string | null>
+    propReferenceImages?: Map<string, string | null>
+    globalReferenceImages?: string[]
+  }
 }) => {
   batchGenerateType.value = config.type
   batchSelectedArtStyle.value = config.artStyle
@@ -1227,6 +1470,7 @@ const handleBatchGenerate = async (config: {
   batchGenerateSelectedScenes.value = config.selectedScenes
   batchGenerateSelectedCharacters.value = config.selectedCharacters
   batchGenerateSelectedProps.value = config.selectedProps
+  batchReferenceImages.value = config.referenceImages
   await executeBatchGenerate()
 }
 
@@ -1246,11 +1490,22 @@ const executeBatchGenerate = async () => {
       for (const sceneId of batchGenerateSelectedScenes.value) {
         const scene = scenes.value.find(s => s.id === sceneId)
         if (scene) {
+          // 收集参考图
+          const referenceImages: string[] = []
+          // 添加场景特定的参考图
+          const sceneRef = batchReferenceImages.value?.sceneReferenceImages?.get(sceneId)
+          if (sceneRef) referenceImages.push(sceneRef)
+          // 添加全局参考图
+          if (batchReferenceImages.value?.globalReferenceImages) {
+            referenceImages.push(...batchReferenceImages.value.globalReferenceImages)
+          }
+          
           items.push({
             id: scene.id,
             type: 'scene',
             name: scene.name,
-            description: scene.description
+            description: scene.description,
+            referenceImages: referenceImages.length > 0 ? referenceImages : undefined
           })
         }
       }
@@ -1261,11 +1516,22 @@ const executeBatchGenerate = async () => {
       for (const charId of batchGenerateSelectedCharacters.value) {
         const char = characters.value.find(c => c.id === charId)
         if (char) {
+          // 收集参考图
+          const referenceImages: string[] = []
+          // 添加人物特定的参考图
+          const charRef = batchReferenceImages.value?.characterReferenceImages?.get(charId)
+          if (charRef) referenceImages.push(charRef)
+          // 添加全局参考图
+          if (batchReferenceImages.value?.globalReferenceImages) {
+            referenceImages.push(...batchReferenceImages.value.globalReferenceImages)
+          }
+          
           items.push({
             id: char.id,
             type: 'character',
             name: char.name,
-            description: char.description
+            description: char.description,
+            referenceImages: referenceImages.length > 0 ? referenceImages : undefined
           })
         }
       }
@@ -1276,20 +1542,31 @@ const executeBatchGenerate = async () => {
       for (const propId of batchGenerateSelectedProps.value) {
         const prop = storyProps.value.find(p => p.id === propId)
         if (prop) {
+          // 收集参考图
+          const referenceImages: string[] = []
+          // 添加道具特定的参考图
+          const propRef = batchReferenceImages.value?.propReferenceImages?.get(propId)
+          if (propRef) referenceImages.push(propRef)
+          // 添加全局参考图
+          if (batchReferenceImages.value?.globalReferenceImages) {
+            referenceImages.push(...batchReferenceImages.value.globalReferenceImages)
+          }
+          
           items.push({
             id: prop.id,
             type: 'character', // 使用character类型，因为道具也需要白色背景
             name: prop.name,
-            description: `Prop object: ${prop.description || prop.name}. Product photography style, white background, detailed prop reference, isolated object`
+            description: `Prop object: ${prop.description || prop.name}. Product photography style, white background, detailed prop reference, isolated object`,
+            referenceImages: referenceImages.length > 0 ? referenceImages : undefined
           })
         }
       }
     }
     
-    // 执行批量生成
+    // 执行批量生成（使用故事板风格）
     const results = await generateBatchImages(
       items,
-      batchSelectedArtStyle.value,
+      storyboardArtStyle.value, // 使用故事板风格
       (completed, total, currentItem) => {
         batchGenerateProgress.value = { completed, total, currentItem }
       },
@@ -1367,6 +1644,58 @@ const executeBatchGenerate = async () => {
                   class="text-xl font-bold text-white bg-transparent border-none outline-none focus:ring-0 min-w-[200px]"
                   placeholder="分镜板标题"
                 />
+                <!-- 风格选择器 -->
+                <div class="relative">
+                  <button
+                    @click.stop="isStyleDropdownOpen = !isStyleDropdownOpen"
+                    class="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg border border-white/10 transition-colors group"
+                  >
+                    <Brush :size="14" class="text-pink-400" />
+                    <span class="text-sm text-white">{{ storyboardArtStyle.name }}</span>
+                    <ChevronDown :size="14" class="text-slate-400 group-hover:text-white transition-colors" />
+                  </button>
+                  <!-- 风格下拉菜单 -->
+                  <Transition
+                    enter-active-class="transition-all duration-200"
+                    enter-from-class="opacity-0 scale-95 translate-y-2"
+                    enter-to-class="opacity-100 scale-100 translate-y-0"
+                    leave-active-class="transition-all duration-200"
+                    leave-from-class="opacity-100 scale-100 translate-y-0"
+                    leave-to-class="opacity-0 scale-95 translate-y-2"
+                  >
+                    <div
+                      v-if="isStyleDropdownOpen"
+                      v-click-outside="() => isStyleDropdownOpen = false"
+                      class="absolute top-full left-0 mt-2 w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-2 z-50 max-h-[400px] overflow-y-auto custom-scrollbar"
+                    >
+                      <div class="grid grid-cols-1 gap-1">
+                        <button
+                          v-for="style in allArtStyles"
+                          :key="style.id"
+                          @click="storyboardArtStyle = style; isStyleDropdownOpen = false"
+                          :class="[
+                            'flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all text-left',
+                            storyboardArtStyle.id === style.id
+                              ? 'bg-white/10 ring-2 ring-offset-2 ring-offset-[#18181b]'
+                              : 'hover:bg-white/5'
+                          ]"
+                          :style="{
+                            '--tw-ring-color': style.previewColor
+                          }"
+                        >
+                          <div
+                            class="w-3 h-3 rounded-full flex-shrink-0"
+                            :style="{ backgroundColor: style.previewColor }"
+                          />
+                          <div class="flex-1">
+                            <div class="text-white font-medium">{{ style.name }}</div>
+                            <div class="text-xs text-slate-400">{{ style.description }}</div>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  </Transition>
+                </div>
               </div>
             </div>
 
@@ -1695,7 +2024,7 @@ const executeBatchGenerate = async () => {
               @delete-scene="deleteScene"
               @update-scene="updateScene"
               @image-upload="handleSceneImageUpload"
-              @generate-image="generateSceneImage"
+              @generate-image="(sceneId, refImages) => generateSceneImage(sceneId, refImages)"
             />
 
             <!-- ========== 人物管理视图 ========== -->
@@ -1708,7 +2037,7 @@ const executeBatchGenerate = async () => {
               @delete-character="deleteCharacter"
               @update-character="updateCharacter"
               @image-upload="handleCharacterImageUpload"
-              @generate-image="generateCharacterImage"
+              @generate-image="(characterId, refImages) => generateCharacterImage(characterId, refImages)"
               @create-sora-character="handleCreateSoraCharacter"
             />
 
@@ -1722,7 +2051,7 @@ const executeBatchGenerate = async () => {
               @delete-prop="deleteProp"
               @update-prop="updateProp"
               @image-upload="handlePropImageUpload"
-              @generate-image="generatePropImage"
+              @generate-image="(propId, refImages) => generatePropImage(propId, refImages)"
             />
 
             <!-- ========== 分镜列表视图 ========== -->
@@ -2330,6 +2659,20 @@ const executeBatchGenerate = async () => {
       :progress="batchGenerateProgress"
       @update:isOpen="isBatchGenerateOpen = $event"
       @generate="handleBatchGenerate"
+    />
+
+    <!-- 生成确认对话框 -->
+    <GenerateConfirmDialog
+      :is-open="isGenerateConfirmOpen"
+      :type="confirmGenerateType"
+      :shot="confirmShotId ? shots.find(s => s.id === confirmShotId) || null : null"
+      :shots="shots"
+      :scenes="scenes"
+      :characters="characters"
+      :story-props="storyProps"
+      @update:isOpen="isGenerateConfirmOpen = $event"
+      @confirm="handleConfirmGenerate"
+      @cancel="() => {}"
     />
 
   </Teleport>

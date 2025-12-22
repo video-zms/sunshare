@@ -694,6 +694,7 @@ export interface BatchImageGenerationItem {
   type: 'scene' | 'character'
   name: string
   description: string
+  referenceImages?: string[] // 参考图数组
 }
 
 export interface BatchImageGenerationResult {
@@ -712,7 +713,8 @@ export const generateShotImage = async (
   cameraMovement?: string,
   artStyle: { promptSuffix: string, name?: string, id?: string } = { promptSuffix: '' },
   model: string = 'gemini-2.5-flash-image',
-  props?: Array<{ name: string, description: string, image?: string }>
+  props?: Array<{ name: string, description: string, image?: string }>,
+  additionalReferenceImages?: string[] // 额外的参考图（如其他分镜的分镜图）
 ): Promise<string> => {
   // 构建风格一致性描述
   const getStyleConsistencyPrompt = (styleId?: string, styleName?: string) => {
@@ -802,13 +804,27 @@ export const generateShotImage = async (
     }
   }
   
+  // 添加额外的参考图（如其他分镜的分镜图）
+  if (additionalReferenceImages && additionalReferenceImages.length > 0) {
+    for (const refImage of additionalReferenceImages) {
+      if (refImage && !referenceImages.includes(refImage)) {
+        referenceImages.push(refImage)
+      }
+    }
+  }
+  
   // 组合提示词
   const basePrompt = promptParts.join('. ')
   
   // 如果有参考图，在提示词中说明
   let referencePrompt = ''
   if (referenceImages.length > 0) {
-    referencePrompt = ` Use the provided reference images for scene setting, character appearance, and props as visual guidance.`
+    const hasAdditionalRefs = additionalReferenceImages && additionalReferenceImages.length > 0
+    if (hasAdditionalRefs) {
+      referencePrompt = ` Use the provided reference images (including scene setting, character appearance, props, and other shot references) as visual guidance to maintain visual consistency.`
+    } else {
+      referencePrompt = ` Use the provided reference images for scene setting, character appearance, and props as visual guidance.`
+    }
   }
   
   const prompt = `Professional storyboard shot illustration: ${basePrompt}.${referencePrompt}
@@ -831,7 +847,8 @@ Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
 export const generateSingleImage = async (
   item: BatchImageGenerationItem,
   artStyle: { promptSuffix: string, name?: string, id?: string },
-  model: string = 'gemini-2.5-flash-image'
+  model: string = 'gemini-2.5-flash-image',
+  referenceImages?: string[]
 ): Promise<string> => {
   // 构建风格一致性描述
   const getStyleConsistencyPrompt = (styleId?: string, styleName?: string) => {
@@ -871,22 +888,28 @@ Pure environmental scene without any living beings or dynamic elements.
 Style consistency: ${styleConsistency}. 
 Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
   } else {
-    prompt = `Professional character design reference sheet: ${item.name}. ${item.description || 'A detailed character'}. 
-Character design sheet with multiple views arranged in reference sheet layout: 
-front view (full body), back view (full body), and close-up detail shots (face, hands, accessories). 
-Clear facial features, detailed costume and accessories, consistent character design across all views. 
-IMPORTANT REQUIREMENTS: Pure white background (#FFFFFF), character reference sheet format, 
-multiple views displayed in organized layout, isolated character on white background, 
-no background elements, no environment, clean reference sheet style. 
-Professional character turn-around sheet format with front view, back view, and detail close-ups. 
+    prompt = `Character sheet: ${item.name}. ${item.description || 'A detailed character'}. 
+Multiple views, 16:9 split composition divided into four equal vertical parts, 
+full body front view of character on the far left, 
+full body side view in the left-middle section, 
+full body back view in the right-middle section, 
+extreme close-up front headshot on the far right, 
+[use reference character], 
+pure solid white background, 
+high details, sharp focus, cinematic lighting, 
+8k resolution, ultra high quality. 
+IMPORTANT: No text, no labels, no character names, no captions, no watermarks, no written words, pure visual content only. 
 Style consistency: ${styleConsistency}. 
 Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
   }
   
   prompt = prompt.replace(/\s+/g, ' ').trim()
   
-  const images = await generateImageFromText(prompt, model, [], {
-    aspectRatio: item.type === 'scene' ? '16:9' : '1:1',
+  // 使用参考图（如果提供）
+  const inputImages = referenceImages || item.referenceImages || []
+  
+  const images = await generateImageFromText(prompt, model, inputImages, {
+    aspectRatio: item.type === 'scene' ? '16:9' : '16:9',
     count: 1
   })
   
@@ -950,15 +973,18 @@ Pure environmental scene without any living beings or dynamic elements.
 Style consistency: ${styleConsistency}. 
 Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
       } else {
-        // 人物提示词：白色背景，包含三视图（正面、背面、特写）
-        prompt = `Professional character design reference sheet: ${item.name}. ${item.description || 'A detailed character'}. 
-Character design sheet with multiple views arranged in reference sheet layout: 
-front view (full body), back view (full body), and close-up detail shots (face, hands, accessories). 
-Clear facial features, detailed costume and accessories, consistent character design across all views. 
-IMPORTANT REQUIREMENTS: Pure white background (#FFFFFF), character reference sheet format, 
-multiple views displayed in organized layout, isolated character on white background, 
-no background elements, no environment, clean reference sheet style. 
-Professional character turn-around sheet format with front view, back view, and detail close-ups. 
+        // 人物提示词：16:9比例，四个垂直部分布局（正面、侧面、背面、特写）
+        prompt = `Character sheet: ${item.name}. ${item.description || 'A detailed character'}. 
+Multiple views, 16:9 split composition divided into four equal vertical parts, 
+full body front view of character on the far left, 
+full body side view in the left-middle section, 
+full body back view in the right-middle section, 
+extreme close-up front headshot on the far right, 
+[use reference character], 
+pure solid white background, 
+high details, sharp focus, cinematic lighting, 
+8k resolution, ultra high quality. 
+IMPORTANT: No text, no labels, no character names, no captions, no watermarks, no written words, pure visual content only. 
 Style consistency: ${styleConsistency}. 
 Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
       }
@@ -966,9 +992,12 @@ Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
       // 清理多余的空格和换行，保持单行格式
       prompt = prompt.replace(/\s+/g, ' ').trim()
       
+      // 使用参考图（如果提供）
+      const referenceImages = item.referenceImages || []
+      
       // 生成图片
-      const images = await generateImageFromText(prompt, model, [], {
-        aspectRatio: item.type === 'scene' ? '16:9' : '1:1',
+      const images = await generateImageFromText(prompt, model, referenceImages, {
+        aspectRatio: item.type === 'scene' ? '16:9' : '16:9',
         count: 1
       })
       
@@ -1230,8 +1259,11 @@ export const generateVideoWithMultipart = async (
     baseUrl?: string
     pollUntilComplete?: boolean
     onProgress?: (progress: number, status: string) => void
-    inputImage?: string | null // 输入图片（base64 格式，用于 image-to-video）
-    characterIds?: string[] // Sora 角色 ID 列表
+    inputImage?: string | null // 输入图片（base64 格式，单个图片，用于向后兼容）
+    inputImages?: string[] // 输入图片数组（base64 格式，多个图片，推荐使用）
+    characterIds?: string[] // Sora 角色 ID 列表（如果 API 支持）
+    characterUrl?: string // 创建角色需要的视频链接
+    characterTimestamps?: string // 视频角色出现的秒数范围，格式 {start},{end}
   } = {}
 ): Promise<{ videoUrl: string, taskId?: string }> => {
   // 使用专门的 Sora 视频生成 API Key
@@ -1266,39 +1298,55 @@ export const generateVideoWithMultipart = async (
   formData.append('size', size)
   formData.append('seconds', seconds.toString())
 
-  // 如果有 Sora 角色 ID，添加到表单数据中
-  if (options.characterIds && options.characterIds.length > 0) {
-    // 根据 API 文档，可能需要以 JSON 数组或逗号分隔的字符串形式传递
-    // 这里假设 API 接受 character_ids 字段，格式为 JSON 数组
-    formData.append('character_ids', JSON.stringify(options.characterIds))
-    console.log('✅ 已添加 Sora 角色 ID 到视频生成请求:', options.characterIds)
+  // 处理参考图片（根据 API 文档，推荐使用 input_reference，File 格式）
+  // 支持多张图片
+  const referenceImages: string[] = []
+  if (options.inputImages && options.inputImages.length > 0) {
+    referenceImages.push(...options.inputImages)
+  } else if (options.inputImage) {
+    // 向后兼容：单个图片
+    referenceImages.push(options.inputImage)
   }
 
-  // 如果有输入图片，添加到表单数据中
-  if (options.inputImage) {
+  if (referenceImages.length > 0) {
     try {
-      // 将 base64 数据转换为 Blob
-      const base64Data = options.inputImage.replace(/^data:image\/\w+;base64,/, '')
-      const mimeType = options.inputImage.match(/^data:(image\/\w+);base64,/)?.[1] || 'image/png'
-      const byteCharacters = atob(base64Data)
-      const byteNumbers = new Array(byteCharacters.length)
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i)
+      // 将 base64 数据转换为 Blob，使用 input_reference 字段（推荐方式）
+      for (let i = 0; i < referenceImages.length; i++) {
+        const imageBase64 = referenceImages[i]
+        const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+        const mimeType = imageBase64.match(/^data:(image\/\w+);base64,/)?.[1] || 'image/png'
+        const byteCharacters = atob(base64Data)
+        const byteNumbers = Array.from({ length: byteCharacters.length }, (_, j) => byteCharacters.charCodeAt(j))
+        const byteArray = new Uint8Array(byteNumbers)
+        const blob = new Blob([byteArray], { type: mimeType })
+        
+        // 使用 input_reference 字段（推荐），支持多张图片
+        const fileName = `reference_${i + 1}.${mimeType.split('/')[1] || 'png'}`
+        formData.append('input_reference', blob, fileName)
       }
-      const byteArray = new Uint8Array(byteNumbers)
-      const blob = new Blob([byteArray], { type: mimeType })
-      
-      // 添加到表单数据，字段名可能是 'image' 或 'input_image'，根据 API 文档调整
-      formData.append('image', blob, 'reference.png')
-      console.log('✅ 已添加参考图片到视频生成请求')
+      console.log(`✅ 已添加 ${referenceImages.length} 张参考图片到视频生成请求（使用 input_reference）`)
     } catch (error) {
       console.warn('⚠️ 添加参考图片失败，将仅使用文本提示词:', error)
     }
-  } else {
-    // 关键：即使不传图片，也要添加一个空的文件字段，强制使用 multipart/form-data
-    // 创建一个空的 Blob 作为占位符
-    const emptyBlob = new Blob([''], { type: 'application/octet-stream' })
-    formData.append('placeholder', emptyBlob, '')
+  }
+
+  // 处理角色相关参数
+  if (options.characterUrl) {
+    formData.append('character_url', options.characterUrl)
+    console.log('✅ 已添加角色视频链接:', options.characterUrl)
+    
+    if (options.characterTimestamps) {
+      formData.append('character_timestamps', options.characterTimestamps)
+      console.log('✅ 已添加角色时间戳:', options.characterTimestamps)
+    }
+  }
+
+  // 如果有 Sora 角色 ID（如果 API 支持，保留向后兼容）
+  if (options.characterIds && options.characterIds.length > 0) {
+    // 注意：API 文档中没有 character_ids 字段，但保留此代码以支持可能的扩展
+    // 如果 API 不支持，可以注释掉或删除
+    formData.append('character_ids', JSON.stringify(options.characterIds))
+    console.log('✅ 已添加 Sora 角色 ID 到视频生成请求:', options.characterIds)
   }
 
   try {
@@ -1402,10 +1450,7 @@ export const createSoraCharacter = async (
       const base64Data = image.replace(/^data:image\/\w+;base64,/, '')
       const mimeType = image.match(/^data:(image\/\w+);base64,/)?.[1] || 'image/png'
       const byteCharacters = atob(base64Data)
-      const byteNumbers = new Array(byteCharacters.length)
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i)
-      }
+      const byteNumbers = Array.from({ length: byteCharacters.length }, (_, i) => byteCharacters.charCodeAt(i))
       const byteArray = new Uint8Array(byteNumbers)
       const blob = new Blob([byteArray], { type: mimeType })
       

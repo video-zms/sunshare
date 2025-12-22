@@ -8,6 +8,7 @@ import { useCanvas, useKeyboard } from './composables'
 import { NodeType, NodeStatus, type AppNode, type Connection, type Group, type ContextMenuState, type SmartSequenceItem, type AssetHistoryItem, type InputAsset, type Storyboard } from './types'
 import { generateImageFromText, generateVideo, analyzeVideo, editImageWithText, planStoryboard, compileMultiFramePrompt, urlToBase64, generateAudio, generateStory, generateStoryShots } from './services/geminiService'
 import { getGenerationStrategy } from './services/videoStrategies'
+import { saveToStorage, loadFromStorage } from './services/storage'
 
 import SidebarDock from './components/SidebarDock.vue'
 import ExpandedView from './components/ExpandedView.vue'
@@ -930,7 +931,31 @@ const handleSketchResult = (type: 'image' | 'video', result: string, prompt: str
 }
 
 // --- Storyboard ---
-const handleStoryboardSave = (storyboard: Storyboard) => {
+// 保存 storyboards 数组到 IndexedDB
+const saveStoryboards = async () => {
+  try {
+    await saveToStorage('storyboards', storyboards.value)
+  } catch (e) {
+    console.error('保存分镜板列表失败:', e)
+  }
+}
+
+// 从 IndexedDB 加载 storyboards 数组
+const loadStoryboards = async () => {
+  try {
+    const saved = await loadFromStorage<Storyboard[]>('storyboards')
+    if (saved && Array.isArray(saved)) {
+      storyboards.value = saved
+      console.log('已加载分镜板列表:', storyboards.value.length, '个')
+      return true
+    }
+  } catch (e) {
+    console.error('加载分镜板列表失败:', e)
+  }
+  return false
+}
+
+const handleStoryboardSave = async (storyboard: Storyboard) => {
   const existingIndex = storyboards.value.findIndex(s => s.id === storyboard.id)
   if (existingIndex >= 0) {
     storyboards.value[existingIndex] = storyboard
@@ -938,8 +963,8 @@ const handleStoryboardSave = (storyboard: Storyboard) => {
     storyboards.value.unshift(storyboard)
   }
   currentStoryboard.value = storyboard
-  // Save to localStorage
-  localStorage.setItem('storyboards', JSON.stringify(storyboards.value))
+  // Save to IndexedDB
+  await saveStoryboards()
   
   // 同步更新关联的节点数据
   const relatedNode = nodes.value.find(n => n.data.storyboardId === storyboard.id)
@@ -958,7 +983,7 @@ const handleStoryboardAIGenerate = async (shotId: string) => {
 }
 
 // Handle viewing existing storyboard from a story node
-const handleViewStoryboard = (nodeId: string) => {
+const handleViewStoryboard = async (nodeId: string) => {
   const node = nodes.value.find(n => n.id === nodeId)
   if (!node || !node.data.storyShots || node.data.storyShots.length === 0) return
 
@@ -970,15 +995,15 @@ const handleViewStoryboard = (nodeId: string) => {
     storyboard = storyboards.value.find(s => s.id === node.data.storyboardId) || null
   }
   
-  // 如果找不到，尝试从 localStorage 加载
+  // 如果找不到，尝试从 IndexedDB 加载
   if (!storyboard && node.data.storyboardId) {
     try {
-      const saved = localStorage.getItem('storyboards')
-      if (saved) {
-        const savedBoards: Storyboard[] = JSON.parse(saved)
+      const savedBoards = await loadFromStorage<Storyboard[]>('storyboards')
+      if (savedBoards && Array.isArray(savedBoards)) {
         storyboard = savedBoards.find(s => s.id === node.data.storyboardId) || null
         // 如果找到了，更新 storyboards 数组
         if (storyboard) {
+          storyboards.value = savedBoards // 更新整个数组以确保数据同步
           const existingIndex = storyboards.value.findIndex(s => s.id === storyboard!.id)
           if (existingIndex >= 0) {
             storyboards.value[existingIndex] = storyboard
@@ -1117,8 +1142,8 @@ const handleGenerateStoryShots = async (nodeId: string) => {
     storyboards.value.unshift(newStoryboard)
     currentStoryboard.value = newStoryboard
 
-    // Save to localStorage
-    localStorage.setItem('storyboards', JSON.stringify(storyboards.value))
+    // Save to IndexedDB
+    await saveStoryboards()
 
     // Open storyboard panel
     isStoryboardOpen.value = true
@@ -1246,19 +1271,11 @@ watch(
 )
 
 // --- Lifecycle ---
-onMounted(() => {
-  loadData()
+onMounted(async () => {
+  await loadData()
   
-  // 从 localStorage 加载 storyboards 数组
-  try {
-    const savedStoryboards = localStorage.getItem('storyboards')
-    if (savedStoryboards) {
-      storyboards.value = JSON.parse(savedStoryboards)
-      console.log('已加载分镜板列表:', storyboards.value.length, '个')
-    }
-  } catch (e) {
-    console.error('加载分镜板列表失败:', e)
-  }
+  // 从 IndexedDB 加载 storyboards 数组
+  await loadStoryboards()
   
   window.addEventListener('mousemove', handleGlobalMouseMove)
   window.addEventListener('mouseup', handleGlobalMouseUp)

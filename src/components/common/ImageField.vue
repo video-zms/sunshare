@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Sparkles, Loader2, Crop, AlertCircle, Trash2 } from 'lucide-vue-next'
+import { Sparkles, Loader2, Crop, AlertCircle, Trash2, Download } from 'lucide-vue-next'
 import UploadButton from './UploadButton.vue'
 import ExpandedView from '../ExpandedView.vue'
 import ImageCropper from '../ImageCropper.vue'
@@ -27,12 +27,16 @@ interface Props {
   autoCrop?: boolean
   // 是否禁用删除
   disableDelete?: boolean
+  // 是否禁用下载
+  disableDownload?: boolean
   // 是否启用拖拽上传
   enableDragDrop?: boolean
   // 接受的文件类型
   accept?: string
   // 自定义类名
   customClass?: string
+  // 参考图数组（用于生成时作为参考）
+  referenceImages?: string[]
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -47,16 +51,18 @@ const props = withDefaults(defineProps<Props>(), {
   disableCrop: false,
   autoCrop: false,
   disableDelete: false,
+  disableDownload: false,
   enableDragDrop: true,
   accept: 'image/*',
-  customClass: ''
+  customClass: '',
+  referenceImages: () => []
 })
 
 const emit = defineEmits<{
   // 上传事件
   upload: [event: Event]
-  // 生成事件
-  generate: []
+  // 生成事件（可传递参考图）
+  generate: [referenceImages?: string[]]
   // 删除事件
   delete: []
   // 图片变化事件（上传或生成后）
@@ -116,13 +122,103 @@ const handleUpload = (event: Event) => {
 
 const handleGenerate = () => {
   if (props.disableGenerate || props.isGenerating) return
-  emit('generate')
+  // 传递参考图（如果有）
+  emit('generate', props.referenceImages && props.referenceImages.length > 0 ? props.referenceImages : undefined)
 }
 
 const handleDelete = () => {
   if (props.disableDelete) return
   emit('delete')
   emit('change', null)
+}
+
+// 处理下载
+const handleDownload = async () => {
+  if (props.disableDownload || !props.image) return
+
+  try {
+    const imageUrl = props.image
+    let fileName = `image-${Date.now()}.png`
+
+    // 如果是 base64 格式，直接下载
+    if (imageUrl.startsWith('data:image/')) {
+      const a = document.createElement('a')
+      a.href = imageUrl
+      // 从 base64 中提取文件扩展名
+      const match = imageUrl.match(/data:image\/(\w+);base64/)
+      if (match && match[1]) {
+        fileName = `image-${Date.now()}.${match[1]}`
+      }
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      return
+    }
+
+    // 如果是 blob URL，直接下载
+    if (imageUrl.startsWith('blob:')) {
+      const a = document.createElement('a')
+      a.href = imageUrl
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      return
+    }
+
+    // 如果是普通 URL，通过 fetch 获取（处理跨域问题）
+    try {
+      const response = await fetch(imageUrl, { mode: 'cors' })
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      
+      // 从响应头或 URL 中获取文件扩展名
+      const contentType = response.headers.get('content-type')
+      if (contentType && contentType.startsWith('image/')) {
+        const ext = contentType.split('/')[1].split(';')[0] // 处理 content-type 中的参数
+        fileName = `image-${Date.now()}.${ext}`
+      } else {
+        // 从 URL 中提取扩展名
+        try {
+          const urlObj = new URL(imageUrl)
+          const pathname = urlObj.pathname
+          const urlExt = pathname.split('.').pop()?.toLowerCase()
+          if (urlExt && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(urlExt)) {
+            fileName = `image-${Date.now()}.${urlExt}`
+          }
+        } catch {
+          // URL 解析失败，使用默认扩展名
+        }
+      }
+
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      
+      // 清理 blob URL
+      setTimeout(() => URL.revokeObjectURL(url), 100)
+    } catch (fetchError) {
+      // fetch 失败（可能是跨域或网络问题），尝试直接打开
+      console.warn('通过 fetch 下载失败，尝试直接打开:', fetchError)
+      const a = document.createElement('a')
+      a.href = imageUrl
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    }
+  } catch (error) {
+    console.error('下载图片失败:', error)
+  }
 }
 
 const handleClosePreview = () => {
@@ -259,18 +355,52 @@ const dragOverlayClass = computed(() => {
     </div>
 
     <!-- 没有图片时显示上传区域 -->
-    <UploadButton
-      v-else
-      mode="empty"
-      :accept="accept"
-      :empty-config="{
-        width: width,
-        height: height,
-        text: uploadText
-      }"
-      :disabled="disabled"
-      @change="handleUpload"
-    />
+    <div v-else class="relative" :style="{ width: width, height: height }">
+      <UploadButton
+        mode="empty"
+        :accept="accept"
+        :empty-config="{
+          width: width,
+          height: height,
+          text: uploadText
+        }"
+        :disabled="disabled"
+        @change="handleUpload"
+      />
+      
+      <!-- 没有图片时也显示操作按钮 -->
+      <div
+        class="absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover/img:opacity-100 transition-opacity rounded-xl"
+        @click.stop
+      >
+        <!-- 生成按钮 -->
+        <button
+          v-if="!disableGenerate"
+          @click.stop="handleGenerate"
+          :disabled="isGenerating"
+          class="p-2 bg-purple-500/80 hover:bg-purple-500 rounded-lg text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          title="AI生成图片"
+        >
+          <Loader2 v-if="isGenerating" :size="14" class="animate-spin" />
+          <Sparkles v-else :size="14" />
+        </button>
+
+        <!-- 上传按钮 -->
+        <UploadButton
+          mode="button"
+          :accept="accept"
+          :disabled="disabled"
+          :button-config="{
+            size: 'md',
+            variant: 'default',
+            iconSize: 14,
+            showText: false
+          }"
+          custom-class="p-2 bg-white/20 hover:bg-white/30 rounded-lg text-white"
+          @change="handleUpload"
+        />
+      </div>
+    </div>
 
     <!-- 拖拽上传提示层 -->
     <div
@@ -330,6 +460,16 @@ const dragOverlayClass = computed(() => {
         title="裁剪图片"
       >
         <Crop :size="14" />
+      </button>
+
+      <!-- 下载按钮 -->
+      <button
+        v-if="!disableDownload"
+        @click.stop="handleDownload"
+        class="p-2 bg-green-500/80 hover:bg-green-500 rounded-lg text-white transition-all"
+        title="下载图片"
+      >
+        <Download :size="14" />
       </button>
 
       <!-- 上传按钮 -->
