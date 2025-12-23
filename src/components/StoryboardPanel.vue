@@ -1068,6 +1068,11 @@ const handleConfirmGenerate = async (data?: {
   characterReferenceImages?: Array<{ id: string, image?: string | null }>
   propReferenceImages?: Array<{ id: string, image?: string | null }>
   otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }>
+  videoParams?: {
+    model?: string
+    size?: string
+    seconds?: number
+  }
 }) => {
   if (!confirmShotId.value) return
   
@@ -1189,6 +1194,11 @@ const executeGenerateShotVideo = async (
     characterReferenceImages?: Array<{ id: string, image?: string | null }>
     propReferenceImages?: Array<{ id: string, image?: string | null }>
     otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }>
+    videoParams?: {
+      model?: string
+      size?: string
+      seconds?: number
+    }
   }
 ) => {
   const shot = shots.value.find(s => s.id === shotId)
@@ -1352,11 +1362,17 @@ const executeGenerateShotVideo = async (
     // 组合提示词
     const prompt = promptParts.join('. ')
     
+    // 使用用户设置的视频参数，如果没有设置则使用默认值
+    const videoParams = editedData?.videoParams || {}
+    const model = videoParams.model || 'sora-2'
+    const size = videoParams.size || '720x1280'
+    const seconds = videoParams.seconds || shot.duration || 15
+    
     // 调用视频生成 API（不等待完成，返回任务ID后轮询）
     const result = await generateVideoWithMultipart(prompt, {
-      model: 'sora-2',
-      size: '720x1280',
-      seconds: shot.duration || 15,
+      model: model,
+      size: size,
+      seconds: seconds,
       pollUntilComplete: false, // 不在这里等待，而是启动后台轮询
       inputImages: inputImages.length > 0 ? inputImages : undefined, // 传递多张参考图片（推荐方式）
       inputImage: inputImages.length > 0 ? inputImages[0] : undefined, // 向后兼容：单个图片

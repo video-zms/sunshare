@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { X, ImageIcon, Film, AlertCircle, Check } from 'lucide-vue-next'
+import { X, ImageIcon, Film, AlertCircle, Check, ChevronDown, Settings } from 'lucide-vue-next'
 import TextField from '../common/TextField.vue'
 import ImageField from '../common/ImageField.vue'
 import type { StoryboardShot, StoryScene, StoryCharacter, StoryProp } from '../../types'
@@ -25,6 +25,11 @@ const emit = defineEmits<{
     characterReferenceImages?: Array<{ id: string, image?: string | null }>
     propReferenceImages?: Array<{ id: string, image?: string | null }>
     otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }> // 其他分镜的分镜图
+    videoParams?: {
+      model?: string
+      size?: string
+      seconds?: number
+    }
   }]
   'cancel': []
 }>()
@@ -38,6 +43,28 @@ const characterReferenceImages = ref<Array<{ id: string, image?: string | null }
 const propReferenceImages = ref<Array<{ id: string, image?: string | null }>>([])
 const selectedOtherShotImages = ref<Array<{ shotId: string, shotNumber: number, image: string }>>([]) // 选中的其他分镜图
 const isOtherShotsSelectorOpen = ref(false) // 其他分镜选择器是否打开
+
+// 视频生成参数（仅在 type === 'video' 时使用）
+const videoModel = ref('sora-2')
+const videoSize = ref('720x1280')
+const videoSeconds = ref(15)
+const showVideoParams = ref(false) // 是否展开视频参数设置
+
+// 可用的视频模型
+const videoModels = [
+  { label: 'Sora 2', value: 'sora-2' },
+  { label: 'Sora 1.5', value: 'sora-1.5' },
+  { label: 'Kling Video O1', value: 'kling-video-o1' }
+]
+
+// 可用的视频尺寸
+const videoSizes = [
+  { label: '720x1280 (竖屏)', value: '720x1280' },
+  { label: '1280x720 (横屏)', value: '1280x720' },
+  { label: '1024x1024 (方形)', value: '1024x1024' },
+  { label: '1920x1080 (全高清)', value: '1920x1080' },
+  { label: '1080x1920 (竖屏高清)', value: '1080x1920' }
+]
 
 // 构建完整的提示词（包含所有分镜信息）
 const buildFullPrompt = (shot: StoryboardShot) => {
@@ -114,6 +141,13 @@ watch([() => props.isOpen, () => props.shot], () => {
     // 清空其他分镜图选择
     selectedOtherShotImages.value = []
     isOtherShotsSelectorOpen.value = false
+    
+    // 初始化视频参数（如果 type === 'video'）
+    if (props.type === 'video' && props.shot) {
+      videoSeconds.value = props.shot.duration || 15
+      // 保持默认值或使用之前设置的值
+    }
+    showVideoParams.value = false
   }
 }, { immediate: true })
 
@@ -136,13 +170,35 @@ const propNames = computed(() => {
 })
 
 const handleConfirm = () => {
-  emit('confirm', {
+  const confirmData: {
+    prompt: string
+    sceneReferenceImage?: string | null
+    characterReferenceImages?: Array<{ id: string, image?: string | null }>
+    propReferenceImages?: Array<{ id: string, image?: string | null }>
+    otherShotImages?: Array<{ shotId: string, shotNumber: number, image: string }>
+    videoParams?: {
+      model?: string
+      size?: string
+      seconds?: number
+    }
+  } = {
     prompt: editablePrompt.value,
     sceneReferenceImage: sceneReferenceImage.value,
     characterReferenceImages: characterReferenceImages.value,
     propReferenceImages: propReferenceImages.value,
     otherShotImages: selectedOtherShotImages.value.length > 0 ? selectedOtherShotImages.value : undefined
-  })
+  }
+  
+  // 如果是视频生成，添加视频参数
+  if (props.type === 'video') {
+    confirmData.videoParams = {
+      model: videoModel.value,
+      size: videoSize.value,
+      seconds: videoSeconds.value
+    }
+  }
+  
+  emit('confirm', confirmData)
   emit('update:isOpen', false)
 }
 
@@ -311,19 +367,76 @@ const removeOtherShotImage = (shotId: string) => {
                 </div>
               </div>
 
-              <!-- 分镜图（生成视频时显示，作为参考） -->
-              <div v-if="type === 'video' && shot?.sceneImage" class="space-y-2">
-                <label class="text-sm font-medium text-white flex items-center gap-2">
-                  <ImageIcon :size="16" class="text-cyan-400" />
-                  分镜图（将作为视频生成的参考）
-                </label>
-                <div class="rounded-xl overflow-hidden border border-cyan-500/30 bg-white/5 p-2">
-                  <img 
-                    :src="shot.sceneImage" 
-                    alt="分镜图"
-                    class="w-full h-auto max-h-[200px] object-contain rounded-lg"
-                  />
+              <!-- 视频生成参数设置 -->
+              <div v-if="type === 'video'" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <Settings :size="16" class="text-cyan-400" />
+                    <label class="text-sm font-medium text-white">视频生成参数</label>
+                  </div>
+                  <button
+                    @click="showVideoParams = !showVideoParams"
+                    class="text-xs text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1"
+                  >
+                    {{ showVideoParams ? '收起' : '展开' }}
+                    <ChevronDown :size="12" class="transition-transform" :class="{ 'rotate-180': showVideoParams }" />
+                  </button>
                 </div>
+                
+                <Transition
+                  enter-active-class="transition-all duration-200"
+                  enter-from-class="opacity-0 max-h-0"
+                  enter-to-class="opacity-100 max-h-[500px]"
+                  leave-active-class="transition-all duration-200"
+                  leave-from-class="opacity-100 max-h-[500px]"
+                  leave-to-class="opacity-0 max-h-0"
+                >
+                  <div v-if="showVideoParams" class="space-y-3 overflow-hidden bg-white/5 rounded-xl p-4 border border-white/10">
+                    <!-- 模型选择 -->
+                    <div class="space-y-2">
+                      <label class="text-xs font-medium text-slate-400">生成模型</label>
+                      <div class="relative">
+                        <select
+                          v-model="videoModel"
+                          class="w-full bg-black/30 border border-white/10 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors"
+                        >
+                          <option v-for="model in videoModels" :key="model.value" :value="model.value">
+                            {{ model.label }}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+                    
+                    <!-- 视频尺寸 -->
+                    <div class="space-y-2">
+                      <label class="text-xs font-medium text-slate-400">视频尺寸</label>
+                      <div class="relative">
+                        <select
+                          v-model="videoSize"
+                          class="w-full bg-black/30 border border-white/10 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors"
+                        >
+                          <option v-for="size in videoSizes" :key="size.value" :value="size.value">
+                            {{ size.label }}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+                    
+                    <!-- 视频时长 -->
+                    <div class="space-y-2">
+                      <label class="text-xs font-medium text-slate-400">视频时长（秒）</label>
+                      <input
+                        v-model.number="videoSeconds"
+                        type="number"
+                        min="1"
+                        max="60"
+                        class="w-full bg-black/30 border border-white/10 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors"
+                        placeholder="15"
+                      />
+                      <p class="text-xs text-slate-500">建议范围：1-60秒</p>
+                    </div>
+                  </div>
+                </Transition>
               </div>
 
               <!-- 可编辑的提示词 -->
