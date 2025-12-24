@@ -532,8 +532,17 @@ export const generateVideo = async (
   // 使用视频生成专用的 API Key（如果配置了的话）
   const ai = getVideoGenGeminiClient()
 
-  // --- Quality Optimization ---
-  const qualitySuffix = ", cinematic lighting, highly detailed, photorealistic, 4k, smooth motion, professional color grading"
+  // --- Quality Optimization (基于综合.md知识体系) ---
+  // 视频生成核心：描述"动态的运动过程"，而非静态画面
+  // 结构：[主体动作] + [镜头运动] + [光影氛围] + [质量参数]
+  const isImageToVideo = !!inputImageBase64
+
+  // 图生视频：重点描述运动和变化，不重复静态描述
+  // 文生视频：需要完整的场景描述 + 动态元素
+  const qualitySuffix = isImageToVideo
+    ? ", smooth natural motion, cinematic camera movement, professional color grading, 4K, high frame rate, seamless transitions"
+    : ", cinematic lighting, highly detailed, photorealistic, 4K, smooth motion, professional color grading, depth of field, film grain"
+
   const enhancedPrompt = prompt + qualitySuffix
 
   // --- Model Selection & Resolution ---
@@ -633,14 +642,21 @@ export const generateVideo = async (
   } catch (e: any) {
     console.warn("Veo Generation Failed. Falling back to Image.", e)
 
-    // --- Fallback: Generate Image ---
+    // --- Fallback: Generate Image (基于综合.md知识体系优化) ---
+    // 视频生成失败时，生成一个"决定性瞬间"的静态画面
     try {
-      const fallbackPrompt = "Cinematic movie still, " + enhancedPrompt
+      // 结构：[主体] + [动作/姿态] + [场景] + [风格] + [光影] + [构图] + [质量]
+      const fallbackPrompt = `Cinematic movie still frame: ${enhancedPrompt}.
+[Style]: Film photography, movie poster aesthetic, dramatic composition.
+[Lighting]: Cinematic lighting, volumetric rays, professional color grading.
+[Composition]: Widescreen 16:9 framing, shallow depth of field, rule of thirds.
+[Quality]: 8K UHD, highly detailed, sharp focus, film grain texture.`
+
       const inputImages = finalInputImageBase64 ? [finalInputImageBase64] : []
 
       const imgs = await generateImageFromText(fallbackPrompt, 'gemini-2.5-flash-image', inputImages, { aspectRatio: options.aspectRatio })
       return { uri: imgs[0], isFallbackImage: true }
-    } catch (imgErr) {
+    } catch (_imgErr) {
       throw new Error("Video generation failed and Image fallback also failed: " + getErrorMessage(e))
     }
   }
@@ -815,7 +831,7 @@ export const generateShotImage = async (
   
   // 组合提示词
   const basePrompt = promptParts.join('. ')
-  
+
   // 如果有参考图，在提示词中说明
   let referencePrompt = ''
   if (referenceImages.length > 0) {
@@ -826,12 +842,17 @@ export const generateShotImage = async (
       referencePrompt = ` Use the provided reference images for scene setting, character appearance, and props as visual guidance.`
     }
   }
-  
-  const prompt = `Professional storyboard shot illustration: ${basePrompt}.${referencePrompt}
-Cinematic composition, detailed scene, atmospheric lighting, rich textures, depth of field, professional cinematography. 
-The shot should clearly show the scene environment, characters (if any), and the action described. 
-Style consistency: ${styleConsistency}. 
-Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+
+  // 基于综合.md知识体系优化提示词结构
+  // 结构：[主体描述] + [动作/姿态] + [场景/环境] + [风格/媒介] + [光影/色彩] + [构图/镜头] + [质量/技术参数]
+  const prompt = `${basePrompt}.${referencePrompt}
+
+[Style]: ${styleConsistency}, ${artStyle.promptSuffix || 'cinematic film style'}
+[Lighting]: Atmospheric lighting, professional cinematography lighting, rich shadows and highlights
+[Composition]: ${shotType ? `${shotType} shot` : 'Medium shot'}, ${cameraMovement ? `${cameraMovement} camera angle` : 'static frame'}, depth of field, rule of thirds
+[Quality]: ${qualityKeywords}, 8K resolution, sharp focus, intricate details
+
+The shot should clearly show the scene environment, characters (if any), and the action described with cinematic composition.`
   
   const cleanPrompt = prompt.replace(/\s+/g, ' ').trim()
   
@@ -879,28 +900,34 @@ export const generateSingleImage = async (
   
   let prompt = ''
   if (item.type === 'scene') {
-    prompt = `Professional scene illustration: ${item.name}. ${item.description || 'A detailed scene'}. 
-Wide establishing shot, cinematic composition, detailed environment, atmospheric lighting, 
-rich textures, depth of field, professional cinematography. 
-IMPORTANT CONSTRAINTS: Static environment only, no characters, no people, no animals, no moving objects, 
-only architectural elements, landscapes, furniture, decorations, and static environmental details. 
-Pure environmental scene without any living beings or dynamic elements. 
-Style consistency: ${styleConsistency}. 
-Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+    // 场景提示词优化 - 基于综合.md知识体系
+    // 结构：[场景主体] + [环境细节] + [风格/媒介] + [光影/色彩] + [构图/镜头] + [质量参数] + [负向约束]
+    prompt = `[Scene]: ${item.name}. ${item.description || 'A detailed environment scene'}.
+
+[Environment Details]: Detailed architectural elements, rich environmental textures, atmospheric depth, layered background elements.
+[Style]: ${styleConsistency}, establishing shot aesthetic.
+[Lighting]: ${artStyle.id === 'cyberpunk' ? 'Neon lights, high contrast, moody atmosphere' : artStyle.id === 'ink-wash' ? 'Soft diffused light, ink gradients' : 'Natural atmospheric lighting, volumetric rays, ambient occlusion'}.
+[Composition]: Wide establishing shot, cinematic 16:9 framing, depth of field, leading lines.
+[Quality]: ${qualityKeywords}, 8K UHD, intricate details, professional photography${artStyle.promptSuffix}.
+
+CRITICAL CONSTRAINTS: Pure static environment only. Absolutely NO characters, NO people, NO animals, NO moving objects, NO living beings. Only architectural elements, landscapes, furniture, decorations, and static environmental details.`
   } else {
-    prompt = `Character sheet: ${item.name}. ${item.description || 'A detailed character'}. 
-Multiple views, 16:9 split composition divided into four equal vertical parts, 
-full body front view of character on the far left, 
-full body side view in the left-middle section, 
-full body back view in the right-middle section, 
-extreme close-up front headshot on the far right, 
-[use reference character], 
-pure solid white background, 
-high details, sharp focus, cinematic lighting, 
-8k resolution, ultra high quality. 
-IMPORTANT: No text, no labels, no character names, no captions, no watermarks, no written words, pure visual content only. 
-Style consistency: ${styleConsistency}. 
-Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+    // 人物提示词优化 - 基于综合.md知识体系
+    // 结构：[主体描述] + [外貌特征] + [服装细节] + [姿态] + [风格] + [构图] + [质量参数]
+    prompt = `[Character]: ${item.name}. ${item.description || 'A detailed character design'}.
+
+[Character Sheet Layout]: Professional character reference sheet, 16:9 aspect ratio, divided into four equal vertical sections:
+- Far left: Full body front view, neutral standing pose
+- Left-middle: Full body side profile view (90 degrees)
+- Right-middle: Full body back view
+- Far right: Extreme close-up front headshot, detailed facial features
+
+[Style]: ${styleConsistency}, character design sheet aesthetic.
+[Background]: Pure solid white background (#FFFFFF), clean and minimal.
+[Lighting]: Professional studio lighting, soft shadows, even illumination across all views.
+[Quality]: ${qualityKeywords}, 8K resolution, sharp focus, highly detailed features, consistent proportions across all views${artStyle.promptSuffix}.
+
+CRITICAL CONSTRAINTS: Absolutely NO text, NO labels, NO character names, NO captions, NO watermarks, NO written words. Pure visual content only. Maintain exact same character appearance, clothing, and features across all four views.`
   }
   
   prompt = prompt.replace(/\s+/g, ' ').trim()
@@ -963,30 +990,34 @@ export const generateBatchImages = async (
       
       let prompt = ''
       if (item.type === 'scene') {
-        // 场景提示词：只包含静态环境，不能包含人物和其他动态元素
-        prompt = `Professional scene illustration: ${item.name}. ${item.description || 'A detailed scene'}. 
-Wide establishing shot, cinematic composition, detailed environment, atmospheric lighting, 
-rich textures, depth of field, professional cinematography. 
-IMPORTANT CONSTRAINTS: Static environment only, no characters, no people, no animals, no moving objects, 
-only architectural elements, landscapes, furniture, decorations, and static environmental details. 
-Pure environmental scene without any living beings or dynamic elements. 
-Style consistency: ${styleConsistency}. 
-Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+        // 场景提示词优化 - 基于综合.md知识体系
+        // 结构：[场景主体] + [环境细节] + [风格/媒介] + [光影/色彩] + [构图/镜头] + [质量参数] + [负向约束]
+        prompt = `[Scene]: ${item.name}. ${item.description || 'A detailed environment scene'}.
+
+[Environment Details]: Detailed architectural elements, rich environmental textures, atmospheric depth, layered background elements.
+[Style]: ${styleConsistency}, establishing shot aesthetic.
+[Lighting]: ${artStyle.id === 'cyberpunk' ? 'Neon lights, high contrast, moody atmosphere' : artStyle.id === 'ink-wash' ? 'Soft diffused light, ink gradients' : 'Natural atmospheric lighting, volumetric rays, ambient occlusion'}.
+[Composition]: Wide establishing shot, cinematic 16:9 framing, depth of field, leading lines.
+[Quality]: ${qualityKeywords}, 8K UHD, intricate details, professional photography${artStyle.promptSuffix}.
+
+CRITICAL CONSTRAINTS: Pure static environment only. Absolutely NO characters, NO people, NO animals, NO moving objects, NO living beings. Only architectural elements, landscapes, furniture, decorations, and static environmental details.`
       } else {
-        // 人物提示词：16:9比例，四个垂直部分布局（正面、侧面、背面、特写）
-        prompt = `Character sheet: ${item.name}. ${item.description || 'A detailed character'}. 
-Multiple views, 16:9 split composition divided into four equal vertical parts, 
-full body front view of character on the far left, 
-full body side view in the left-middle section, 
-full body back view in the right-middle section, 
-extreme close-up front headshot on the far right, 
-[use reference character], 
-pure solid white background, 
-high details, sharp focus, cinematic lighting, 
-8k resolution, ultra high quality. 
-IMPORTANT: No text, no labels, no character names, no captions, no watermarks, no written words, pure visual content only. 
-Style consistency: ${styleConsistency}. 
-Quality requirements: ${qualityKeywords}${artStyle.promptSuffix}`
+        // 人物提示词优化 - 基于综合.md知识体系
+        // 结构：[主体描述] + [外貌特征] + [服装细节] + [姿态] + [风格] + [构图] + [质量参数]
+        prompt = `[Character]: ${item.name}. ${item.description || 'A detailed character design'}.
+
+[Character Sheet Layout]: Professional character reference sheet, 16:9 aspect ratio, divided into four equal vertical sections:
+- Far left: Full body front view, neutral standing pose
+- Left-middle: Full body side profile view (90 degrees)
+- Right-middle: Full body back view
+- Far right: Extreme close-up front headshot, detailed facial features
+
+[Style]: ${styleConsistency}, character design sheet aesthetic.
+[Background]: Pure solid white background (#FFFFFF), clean and minimal.
+[Lighting]: Professional studio lighting, soft shadows, even illumination across all views.
+[Quality]: ${qualityKeywords}, 8K resolution, sharp focus, highly detailed features, consistent proportions across all views${artStyle.promptSuffix}.
+
+CRITICAL CONSTRAINTS: Absolutely NO text, NO labels, NO character names, NO captions, NO watermarks, NO written words. Pure visual content only. Maintain exact same character appearance, clothing, and features across all four views.`
       }
       
       // 清理多余的空格和换行，保持单行格式
