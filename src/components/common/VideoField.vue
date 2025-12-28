@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Sparkles, Loader2, AlertCircle, Trash2, Play } from 'lucide-vue-next'
+import { Sparkles, Loader2, AlertCircle, Trash2, Play, Download } from 'lucide-vue-next'
 import UploadButton from './UploadButton.vue'
 import ExpandedView from '../ExpandedView.vue'
 
@@ -26,6 +26,8 @@ interface Props {
   disablePreview?: boolean
   // 是否禁用删除
   disableDelete?: boolean
+  // 是否禁用下载
+  disableDownload?: boolean
   // 是否启用拖拽上传
   enableDragDrop?: boolean
   // 接受的文件类型
@@ -48,6 +50,7 @@ const props = withDefaults(defineProps<Props>(), {
   disableGenerate: false,
   disablePreview: false,
   disableDelete: false,
+  disableDownload: false,
   enableDragDrop: true,
   accept: 'video/*',
   customClass: '',
@@ -117,6 +120,49 @@ const handleDelete = () => {
   if (props.disableDelete) return
   emit('delete')
   emit('change', null)
+}
+
+const handleDownload = async () => {
+  if (props.disableDownload || !props.video || videoError.value) return
+
+  try {
+    // 如果是 HTTP/HTTPS URL，直接下载
+    if (props.video.startsWith('http://') || props.video.startsWith('https://')) {
+      const link = document.createElement('a')
+      link.href = props.video
+      link.download = `video_${Date.now()}.mp4`
+      link.target = '_blank'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      return
+    }
+
+    // 如果是 data URL，转换为 blob 后下载
+    if (props.video.startsWith('data:')) {
+      const response = await fetch(props.video)
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `video_${Date.now()}.mp4`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+      return
+    }
+
+    // 其他情况，尝试直接下载
+    const link = document.createElement('a')
+    link.href = props.video
+    link.download = `video_${Date.now()}.mp4`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } catch (error) {
+    console.error('下载视频失败:', error)
+  }
 }
 
 const handleClosePreview = () => {
@@ -285,7 +331,7 @@ const dragOverlayClass = computed(() => {
       <!-- 生成失败提示 -->
       <div
         v-else-if="generatingStatus === 'failed'"
-        class="absolute inset-0 flex flex-col items-center justify-center bg-red-500/20 border border-red-500/30 rounded-xl z-10"
+        class="absolute inset-0 flex flex-col items-center justify-center bg-red-500/20 border border-red-500/30 rounded-xl z-1"
       >
         <AlertCircle :size="20" class="text-red-400 mb-1" />
         <div class="text-xs text-red-400">生成失败</div>
@@ -371,6 +417,16 @@ const dragOverlayClass = computed(() => {
         title="播放视频"
       >
         <Play :size="14" fill="white" />
+      </button>
+
+      <!-- 下载按钮 -->
+      <button
+        v-if="!disableDownload"
+        @click.stop="handleDownload"
+        class="p-2 bg-white/20 hover:bg-white/30 rounded-lg text-white transition-all"
+        title="下载视频"
+      >
+        <Download :size="14" />
       </button>
 
       <!-- 生成按钮 -->

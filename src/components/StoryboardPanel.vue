@@ -8,7 +8,7 @@ import {
 } from 'lucide-vue-next'
 import type { StoryboardShot, SceneType, CameraMovement, Storyboard, StoryScene, StoryCharacter, StoryProp, ArtStyle } from '../types'
 import { ART_STYLES } from '../types'
-import { generateBatchImages, generateSingleImage, generateShotImage, generateVideoWithMultipart, createSoraCharacter, type BatchImageGenerationItem } from '../services/geminiService'
+import { generateBatchImages, generateSingleImage, generateShotImage, generateVideoWithMultipart, createSoraCharacter, generateGridStoryboard, generateCharacterDetailedDescription, GRID_LAYOUTS, type BatchImageGenerationItem, type GridShotInfo, type GridLayout } from '../services/geminiService'
 import { saveToStorage, loadFromStorage } from '../services/storage'
 import StoryboardShotsList from './storyboard/StoryboardShotsList.vue'
 import StoryboardScenesView from './storyboard/StoryboardScenesView.vue'
@@ -18,6 +18,7 @@ import BatchSceneDialog from './storyboard/BatchSceneDialog.vue'
 import BatchCharactersDialog from './storyboard/BatchCharactersDialog.vue'
 import BatchPropsDialog from './storyboard/BatchPropsDialog.vue'
 import BatchGenerateDialog from './storyboard/BatchGenerateDialog.vue'
+import GridGenerateDialog from './storyboard/GridGenerateDialog.vue'
 import GenerateConfirmDialog from './storyboard/GenerateConfirmDialog.vue'
 import SelectDropdown from './storyboard/SelectDropdown.vue'
 
@@ -101,6 +102,15 @@ const showModelDropdown = ref(false)
 const isGenerateConfirmOpen = ref(false)
 const confirmGenerateType = ref<'image' | 'video'>('image')
 const confirmShotId = ref<string | null>(null)
+
+// 宫格生成状态
+const isGridDialogOpen = ref(false)
+const isGridGenerating = ref(false)
+const gridProgress = ref({
+  stage: 'generating' as 'generating' | 'splitting' | 'complete',
+  progress: 0
+})
+const currentGridLayout = ref<GridLayout | null>(null)
 
 // 可用的图片生成模型
 const imageGenModels = [
@@ -1001,7 +1011,7 @@ const generateSceneImage = async (sceneId: string, referenceImages?: string[]) =
 const generateCharacterImage = async (characterId: string, referenceImages?: string[]) => {
   const char = characters.value.find(c => c.id === characterId)
   if (!char) return
-  
+
   generatingCharacterIds.value.add(characterId)
   try {
     const image = await generateSingleImage(
@@ -1024,6 +1034,32 @@ const generateCharacterImage = async (characterId: string, referenceImages?: str
     generatingCharacterIds.value.delete(characterId)
   }
 }
+
+// 为人物生成详细描述
+const handleEnhanceCharacterDescription = async (characterId: string) => {
+  const char = characters.value.find(c => c.id === characterId)
+  if (!char || !char.name) return
+
+  generatingCharacterIds.value.add(characterId)
+  try {
+    // 调用 AI 生成详细描述
+    const detailedDescription = await generateCharacterDetailedDescription(
+      char.name,
+      char.description, // 传入现有描述作为基础
+      undefined // 暂不传入故事上下文
+    )
+
+    // 更新人物描述
+    char.description = detailedDescription
+    console.log(`已为人物"${char.name}"生成详细描述:`, detailedDescription)
+  } catch (error: any) {
+    console.error('生成人物详细描述失败:', error)
+    alert(`生成失败: ${error.message || '未知错误'}`)
+  } finally {
+    generatingCharacterIds.value.delete(characterId)
+  }
+}
+
 
 // 单独生成道具图片
 const generatePropImage = async (propId: string, referenceImages?: string[]) => {
@@ -1630,6 +1666,89 @@ const executeBatchGenerate = async () => {
     isBatchGenerating.value = false
   }
 }
+
+// 宫格生成处理函数
+const handleGridGenerate = async (config: {
+  startIndex: number
+  layout: GridLayout
+  artStyle: ArtStyle
+  model: string
+}) => {
+  let targetShots: StoryboardShot[] = []
+
+  try {
+    isGridGenerating.value = true
+    isGridDialogOpen.value = false
+    currentGridLayout.value = config.layout
+
+    // 获取连续 N 个分镜
+    targetShots = shots.value.slice(config.startIndex, config.startIndex + config.layout.total)
+
+    if (targetShots.length < config.layout.total) {
+      console.error(`分镜数量不足${config.layout.total}个`)
+      return
+    }
+
+    // 标记这些分镜为生成中
+    targetShots.forEach(shot => {
+      generatingShotIds.value.add(shot.id)
+    })
+
+    // 构建宫格信息
+    const gridInfo: GridShotInfo[] = targetShots.map(shot => {
+      const scene = shot.sceneId ? getSceneById(shot.sceneId) : undefined
+      const characterList = (shot.characterIds || [])
+        .map(id => getCharacterById(id))
+        .filter(Boolean) as StoryCharacter[]
+      const propList = (shot.propIds || [])
+        .map(id => getPropById(id))
+        .filter(Boolean) as StoryProp[]
+
+      return {
+        shot,
+        scene,
+        characters: characterList,
+        props: propList
+      }
+    })
+
+    // 调用生成函数
+    const splitImages = await generateGridStoryboard(
+      gridInfo,
+      config.layout,
+      config.artStyle,
+      config.model,
+      (stage, progress) => {
+        gridProgress.value = { stage, progress: progress || 0 }
+      }
+    )
+
+    // 更新每个分镜的图像
+    splitImages.forEach((image, index) => {
+      const targetShot = targetShots[index]
+      const shotIndex = shots.value.findIndex(s => s.id === targetShot.id)
+      if (shotIndex !== -1) {
+        shots.value[shotIndex].sceneImage = image
+      }
+    })
+
+    // 成功提示
+    console.log(`${config.layout.name}生成完成！`)
+
+  } catch (error) {
+    console.error(`${config.layout.name}生成失败:`, error)
+    const errorMessage = error instanceof Error ? error.message : '未知错误'
+    console.error(`宫格生成失败: ${errorMessage}`)
+  } finally {
+    // 清除生成状态
+    isGridGenerating.value = false
+    currentGridLayout.value = null
+    targetShots.forEach(shot => {
+      generatingShotIds.value.delete(shot.id)
+    })
+  }
+}
+
 </script>
 
 <template>
@@ -1873,6 +1992,20 @@ const executeBatchGenerate = async () => {
                 <span>批量上传</span>
               </button>
 
+              <!-- 宫格生成 -->
+              <button
+                v-if="shots.length >= Math.min(...GRID_LAYOUTS.map(l => l.total))"
+                @click="isGridDialogOpen = true"
+                :disabled="isGridGenerating"
+                class="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-500/20 to-pink-500/20 border border-purple-500/30 rounded-xl text-sm font-medium text-white hover:border-purple-500/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <LayoutGrid :size="16" />
+                <span>宫格生成</span>
+                <span v-if="isGridGenerating && currentGridLayout" class="text-xs text-purple-300">
+                  {{ gridProgress.stage === 'generating' ? '生成中...' : '拆分中...' }}
+                </span>
+              </button>
+
               <!-- 智能关联全部 -->
               <button
                 v-if="shots.length > 0 && (scenes.length > 0 || characters.length > 0 || storyProps.length > 0) && selectedShotIds.size === 0"
@@ -2055,6 +2188,7 @@ const executeBatchGenerate = async () => {
               @image-upload="handleCharacterImageUpload"
               @generate-image="(characterId, refImages) => generateCharacterImage(characterId, refImages)"
               @create-sora-character="handleCreateSoraCharacter"
+              @enhance-description="handleEnhanceCharacterDescription"
             />
 
             <!-- ========== 道具管理视图 ========== -->
@@ -2689,6 +2823,18 @@ const executeBatchGenerate = async () => {
       @update:isOpen="isGenerateConfirmOpen = $event"
       @confirm="handleConfirmGenerate"
       @cancel="() => {}"
+    />
+
+    <!-- 宫格生成对话框 -->
+    <GridGenerateDialog
+      :is-open="isGridDialogOpen"
+      :shots="shots"
+      :scenes="scenes"
+      :characters="characters"
+      :story-props="storyProps"
+      :current-art-style="storyboardArtStyle"
+      @close="isGridDialogOpen = false"
+      @generate="handleGridGenerate"
     />
 
   </Teleport>

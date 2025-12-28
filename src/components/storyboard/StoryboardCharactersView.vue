@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Plus, Trash2, Sparkles } from 'lucide-vue-next'
+import { Plus, Trash2, Sparkles, Wand2 } from 'lucide-vue-next'
 import ImageField from '../common/ImageField.vue'
 import type { StoryCharacter } from '../../types'
 
@@ -18,6 +18,7 @@ const emit = defineEmits<{
   'image-upload': [e: Event, characterId: string]
   'generate-image': [characterId: string, referenceImages?: string[]]
   'create-sora-character': [characterId: string]
+  'enhance-description': [characterId: string]
 }>()
 
 const handleImageChange = (characterId: string, image: string | null) => {
@@ -132,21 +133,35 @@ const handleTypeChange = (char: StoryCharacter, type: 'sora' | 'custom') => {
           </button>
         </div>
 
-        <textarea
-          :value="char.description"
-          @input="handleCharacterUpdate(char, 'description', ($event.target as HTMLTextAreaElement).value)"
-          class="w-full bg-white/5 border border-white/5 rounded-lg px-2 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-purple-500/50"
-          placeholder="角色描述..."
-          rows="2"
-          @mousedown.stop
-        />
-        
+        <!-- Character Description -->
+        <div class="mb-2">
+          <textarea
+            :value="char.description"
+            @input="handleCharacterUpdate(char, 'description', ($event.target as HTMLTextAreaElement).value)"
+            class="w-full bg-white/5 border border-white/5 rounded-lg px-2 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-purple-500/50"
+            placeholder="角色详细描述（外貌、服装、特征等）..."
+            rows="4"
+            @mousedown.stop
+          />
+        </div>
+
+        <!-- Generate Detailed Description Button -->
+        <button
+          @click.stop="emit('enhance-description', char.id)"
+          :disabled="generatingCharacterIds.has(char.id) || !char.name"
+          class="w-full mb-2 px-2 py-1.5 text-[11px] bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+          title="让 AI 生成详细的角色描述"
+        >
+          <Wand2 :size="12" />
+          <span>{{ generatingCharacterIds.has(char.id) ? '生成中...' : '生成详细描述' }}</span>
+        </button>
+
         <!-- Generate Image Button -->
         <button
           v-if="char.type !== 'sora' || !char.soraCharacterId"
           @click.stop="emit('generate-image', char.id, char.image ? [char.image] : undefined)"
           :disabled="generatingCharacterIds.has(char.id)"
-          class="w-full mt-2 px-2 py-1.5 text-[11px] bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+          class="w-full px-2 py-1.5 text-[11px] bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
         >
           <Sparkles :size="12" />
           <span>{{ generatingCharacterIds.has(char.id) ? '生成中...' : '生成角色图片' }}</span>

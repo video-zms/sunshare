@@ -320,9 +320,9 @@ const STORY_TO_SHOTS_INSTRUCTION = `
   ],
   "characters": [
     {
-      "id": "char-1", 
+      "id": "char-1",
       "name": "角色名称",
-      "description": "角色的外貌、性格特点描述"
+      "description": "角色的完整视觉描述，包含以下细节：\n- 年龄和性别\n- 面部特征（脸型、眼睛、鼻子、嘴巴等）\n- 发型和发色\n- 身高和体型\n- 服装风格和颜色\n- 配饰和道具\n- 独特标识（纹身、疤痕、眼镜等）\n- 气质和姿态特征"
     }
   ],
   "shots": [
@@ -343,11 +343,20 @@ const STORY_TO_SHOTS_INSTRUCTION = `
 说明：
 1. scenes: 从故事中提取所有出现的场景/地点
 2. characters: 从故事中提取所有出现的角色人物
+   - 【重要】description 必须非常详细，包含足够的视觉信息让AI能够准确生成人物形象
+   - 包括：外貌特征、服装、发型、配饰、身材、气质等所有可识别的细节
+   - 示例："25岁的年轻女性，瓜子脸，大眼睛双眼皮，长直黑发及腰，身高165cm身材苗条。穿白色连衣裙，戴银色项链和小耳环。气质温柔优雅，笑容甜美。"
 3. shots: 分镜列表，每个分镜关联对应的场景和人物
    - sceneId: 该分镜所在的场景ID
    - characterIds: 该分镜中出现的人物ID数组
 4. sceneType 可选值：远景/全景/中景/近景/特写/大特写
 5. cameraMovement 可选值：固定/横摇/俯仰/横移/升降/跟随/推/拉/摇/移/环绕
+
+特别要求：
+- 人物描述要具体到能让人一眼认出该角色
+- 每个人物要有至少3-5个明显的视觉特征
+- 如果故事中提到服装细节，务必在描述中体现
+- 确保不同人物有明显可区分的特征
 `
 
 const HELP_ME_WRITE_INSTRUCTION = `
@@ -1154,6 +1163,102 @@ export const generateStoryShots = async (
 }
 
 /**
+ * 人物详细描述生成指令
+ */
+const CHARACTER_DETAIL_GENERATION_INSTRUCTION = `
+你是一位专业的角色设定师和视觉描述专家。你的任务是为给定的角色生成详细的视觉描述。
+
+输出格式要求（纯文本，不要包含任何 JSON 或 markdown 标记）：
+
+描述必须包含以下所有细节：
+1. 年龄和性别（精确到年龄段）
+2. 面部特征（脸型、眼睛、眉毛、鼻子、嘴巴、肤色等）
+3. 发型和发色（长度、质地、颜色、造型）
+4. 身高和体型（具体身高范围、体型特点）
+5. 服装风格和颜色（上衣、下装、鞋子、材质等）
+6. 配饰和道具（首饰、眼镜、帽子、随身物品等）
+7. 独特标识（纹身、疤痕、胎记、特殊标记等，如无则说明）
+8. 气质和姿态特征（性格外在表现、走路姿态、习惯动作等）
+
+要求：
+- 描述要具体、详实，避免模糊或抽象的词汇
+- 每个特征要有明确的描述，不能只说"普通"或"一般"
+- 至少包含 5-8 个明显的、可视化的特征
+- 如果用户提供了故事上下文，要结合故事中的人物性格和情节
+- 确保描述的视觉一致性，让 AI 图像生成模型能准确还原
+
+示例输出：
+"25岁的年轻女性，瓜子脸，大眼睛双眼皮，眼睛呈深褐色。鼻梁高挺，嘴唇薄而红润。长直黑发及腰，发质柔顺带有自然光泽。身高165cm，身材苗条但不瘦弱，体态优雅。穿白色蕾丝连衣裙，裙长及膝，搭配裸色平底鞋。戴银色细项链和小珍珠耳环。左手腕有一个小小的蝴蝶纹身。皮肤白皙细腻。气质温柔优雅，笑容甜美，走路时步伐轻盈，说话时习惯性地轻轻拨弄头发。"
+`
+
+/**
+ * 为角色生成详细的视觉描述
+ * @param characterName 角色名称
+ * @param basicDescription 角色的基本描述（可选）
+ * @param storyContext 故事上下文（可选，用于更好地理解角色）
+ * @returns 详细的视觉描述字符串
+ */
+export const generateCharacterDetailedDescription = async (
+  characterName: string,
+  basicDescription?: string,
+  storyContext?: string
+): Promise<string> => {
+  try {
+    let prompt = `请为以下角色生成详细的视觉描述：\n\n角色名称：${characterName}\n`
+
+    if (basicDescription) {
+      prompt += `基本描述：${basicDescription}\n`
+    }
+
+    if (storyContext) {
+      prompt += `\n故事背景：\n${storyContext}\n`
+    }
+
+    prompt += `\n请生成该角色完整、详细的外貌描述。`
+
+    const detailedDescription = await llmService.sendChatMessage(
+      [],
+      prompt,
+      { systemPrompt: CHARACTER_DETAIL_GENERATION_INSTRUCTION }
+    )
+
+    return detailedDescription.trim()
+  } catch (error: any) {
+    console.error('生成人物详细描述失败:', error)
+    // 如果失败，返回原始描述或默认描述
+    return basicDescription || `${characterName}的详细描述（生成失败）`
+  }
+}
+
+/**
+ * 批量为角色生成详细描述
+ * @param characters 角色列表，每个包含 name 和可选的 description
+ * @param storyContext 故事上下文（可选）
+ * @returns 包含详细描述的角色列表
+ */
+export const generateCharactersDetailedDescriptions = async (
+  characters: Array<{ name: string; description?: string }>,
+  storyContext?: string
+): Promise<Array<{ name: string; detailedDescription: string }>> => {
+  const results = []
+
+  for (const char of characters) {
+    const detailedDescription = await generateCharacterDetailedDescription(
+      char.name,
+      char.description,
+      storyContext
+    )
+
+    results.push({
+      name: char.name,
+      detailedDescription
+    })
+  }
+
+  return results
+}
+
+/**
  * 使用 multipart/form-data 格式生成视频（Sora-2 等模型）
  * 根据用户提供的 Python 示例实现
  */
@@ -1627,6 +1732,363 @@ export const connectLiveSession = async (
     }
   })
   return sessionPromise
+}
+
+// ============================================
+// 多宫格分镜生成功能
+// ============================================
+
+export interface GridShotInfo {
+  shot: any // StoryboardShot type
+  scene?: any // StoryScene type
+  characters: any[] // StoryCharacter[] type
+  props: any[] // StoryProp[] type
+}
+
+// 宫格布局配置
+export interface GridLayout {
+  rows: number    // 行数
+  cols: number    // 列数
+  total: number   // 总格子数
+  name: string    // 显示名称
+  aspectRatio?: string  // 推荐宽高比
+}
+
+// 预定义的宫格布局
+export const GRID_LAYOUTS: GridLayout[] = [
+  { rows: 2, cols: 2, total: 4, name: '4宫格 (2×2)', aspectRatio: '1:1' },
+  { rows: 2, cols: 3, total: 6, name: '6宫格 (2×3)', aspectRatio: '3:2' },
+  { rows: 3, cols: 2, total: 6, name: '6宫格 (3×2)', aspectRatio: '2:3' },
+  { rows: 3, cols: 3, total: 9, name: '9宫格 (3×3)', aspectRatio: '1:1' },
+  { rows: 3, cols: 4, total: 12, name: '12宫格 (3×4)', aspectRatio: '4:3' },
+  { rows: 4, cols: 3, total: 12, name: '12宫格 (4×3)', aspectRatio: '3:4' },
+  { rows: 4, cols: 4, total: 16, name: '16宫格 (4×4)', aspectRatio: '1:1' }
+]
+
+// 兼容旧版本的类型别名
+export type NineGridShotInfo = GridShotInfo
+
+/**
+ * 生成多宫格分镜提示词（支持任意行列布局）
+ */
+export const generateGridPrompt = (
+  shots: GridShotInfo[],
+  layout: GridLayout,
+  artStyle: { id?: string; name?: string; promptSuffix?: string },
+  globalStyle: string = 'cinematic film style'
+): string => {
+  const { rows, cols, total } = layout
+
+  // 风格一致性前缀（复用现有的 styleReferences）
+  const styleReferences: Record<string, string> = {
+    'anime': 'in reference to Japanese anime style, maintaining consistent animation aesthetics, inspired by Studio Ghibli and Makoto Shinkai works',
+    'realistic': 'in reference to photorealistic photography style, maintaining consistent photographic aesthetics and color grading',
+    'cartoon': 'in reference to cartoon illustration style, maintaining consistent cartoon aesthetics and color palette',
+    'oil-painting': 'in reference to classical oil painting style, maintaining consistent painting techniques and color application',
+    'watercolor': 'in reference to watercolor painting style, maintaining consistent transparency and color blending',
+    'pixel-art': 'in reference to pixel art style, maintaining consistent pixel aesthetics and retro feel',
+    'cyberpunk': 'in reference to cyberpunk style, maintaining consistent futuristic atmosphere and neon aesthetics',
+    'ink-wash': 'in reference to Chinese ink wash painting style, maintaining consistent ink gradation and artistic conception',
+    '3d-render': 'in reference to 3D rendering style, maintaining consistent rendering quality and lighting effects',
+    'comic': 'in reference to comic book style, maintaining consistent line art and panel composition'
+  }
+
+  const styleConsistency = artStyle.id && styleReferences[artStyle.id]
+    ? styleReferences[artStyle.id]
+    : artStyle.name
+      ? `in reference to ${artStyle.name} style, maintaining consistent visual aesthetics and artistic style`
+      : 'maintaining consistent visual style and artistic aesthetics'
+
+  // 构建宫格布局提示
+  const gridPrompt = `Create a ${rows}×${cols} grid storyboard layout (${total} panels in total) with CLEARLY DEFINED BORDERS between each panel. Each panel should be a distinct scene as described below.`
+
+  // 为每个分镜生成位置描述
+  const getPositionName = (index: number): string => {
+    const row = Math.floor(index / cols)
+    const col = index % cols
+
+    const rowNames = ['Top', 'Middle-Top', 'Middle', 'Middle-Bottom', 'Bottom']
+    const colNames = ['Left', 'Center-Left', 'Center', 'Center-Right', 'Right']
+
+    let rowName = row === 0 ? 'Top' : row === rows - 1 ? 'Bottom' :
+                   rows <= 3 ? (row === 1 ? 'Middle' : `Row-${row + 1}`) : `Row-${row + 1}`
+    let colName = col === 0 ? 'Left' : col === cols - 1 ? 'Right' :
+                   cols <= 3 ? (col === 1 ? 'Center' : `Col-${col + 1}`) : `Col-${col + 1}`
+
+    return `${rowName}-${colName}`
+  }
+
+  // 构建每个分镜的描述
+  const panelDescriptions = shots.map((info, index) => {
+    const position = getPositionName(index)
+    const { shot, scene, characters, props } = info
+
+    let panelDesc = `\n[Panel ${index + 1} - ${position}]:\n`
+
+    // 场景信息
+    if (scene) {
+      panelDesc += `Scene: ${scene.name}. ${scene.description || ''}\n`
+    }
+
+    // 人物信息（增强细节描述）
+    if (characters && characters.length > 0) {
+      panelDesc += `Characters in this panel:\n`
+
+      characters.forEach((char: any) => {
+        // 基本信息
+        panelDesc += `  - ${char.name}`
+
+        // 如果有参考图，明确说明
+        if (char.image) {
+          panelDesc += ` (refer to the reference image provided for this character's appearance)`
+        }
+
+        // 详细描述
+        if (char.description) {
+          panelDesc += `: ${char.description}`
+        }
+
+        panelDesc += `\n`
+      })
+
+      // 如果多个人物，强调区分
+      if (characters.length > 1) {
+        const charNames = characters.map((c: any) => c.name).join(' and ')
+        panelDesc += `  IMPORTANT: Clearly distinguish between ${charNames} based on their individual descriptions and reference images. Each character should have distinct and recognizable features.\n`
+      }
+    }
+
+    // 道具信息
+    if (props && props.length > 0) {
+      panelDesc += `Props: `
+      props.forEach((prop: any, idx: number) => {
+        panelDesc += prop.name
+        if (prop.description) {
+          panelDesc += ` (${prop.description})`
+        }
+        if (idx < props.length - 1) {
+          panelDesc += ', '
+        }
+      })
+      panelDesc += `\n`
+    }
+
+    // 分镜描述
+    panelDesc += `Action: ${shot.description || 'Scene depiction'}\n`
+
+    // 景别和运镜
+    panelDesc += `Shot Type: ${shot.sceneType || 'Medium shot'}, Camera: ${shot.cameraMovement || 'Static'}`
+
+    return panelDesc
+  }).join('\n')
+
+  // 组合完整提示词（遵循综合知识框架）
+  const fullPrompt = `${gridPrompt}
+
+${panelDescriptions}
+
+[Layout Requirements]:
+- Exact ${rows}×${cols} grid layout (${cols} columns × ${rows} rows)
+- Clear WHITE or BLACK borders/dividers between panels (2-5px width)
+- Each panel has equal size
+- High-resolution image (minimum 2048px on longest side recommended)
+- Panels are numbered from 1-${total}, reading left-to-right, top-to-bottom
+
+[Character Consistency Requirements]:
+- If a character appears in multiple panels, they MUST maintain the exact same appearance, clothing, hairstyle, and distinctive features across ALL panels
+- Each character should be clearly recognizable and distinguishable from other characters
+- When reference images are provided for characters, strictly follow the visual appearance shown in those reference images
+- Pay special attention to facial features, body proportions, clothing details, and any unique accessories
+- Maintain consistent art style and character design throughout all panels
+
+[Style]: ${styleConsistency}, ${artStyle.promptSuffix || globalStyle}
+[Lighting]: Consistent atmospheric lighting across all panels, professional cinematography
+[Composition]: Each panel follows its specified shot type and camera movement
+[Quality]: high quality, professional storyboard, consistent style across all panels, detailed, well-composed, artistic, masterful execution, 8K resolution, sharp focus, intricate details
+
+CRITICAL: This must be a single image containing ${total} separate panels arranged in a ${rows}×${cols} grid with clear borders. Do NOT generate ${total} separate images. Ensure ALL characters maintain perfect visual consistency across panels if they appear multiple times.`
+
+  return fullPrompt
+}
+
+// 保留旧函数名作为兼容
+export const generateNineGridPrompt = (
+  nineShots: GridShotInfo[],
+  artStyle: { id?: string; name?: string; promptSuffix?: string },
+  globalStyle: string = 'cinematic film style'
+): string => {
+  return generateGridPrompt(nineShots, GRID_LAYOUTS[3], artStyle, globalStyle) // 3×3 布局
+}
+
+/**
+ * 使用 Canvas 将宫格图像拆分为多张独立图片（支持任意行列布局）
+ */
+export const splitGridImage = async (base64Image: string, layout: GridLayout): Promise<string[]> => {
+  const { rows, cols, total } = layout
+
+  return new Promise((resolve, reject) => {
+    // 创建图像对象
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+
+        if (!ctx) {
+          reject(new Error('无法创建Canvas上下文'))
+          return
+        }
+
+        // 图像尺寸
+        const imgWidth = img.width
+        const imgHeight = img.height
+
+        // 每个面板的尺寸
+        const panelWidth = Math.floor(imgWidth / cols)
+        const panelHeight = Math.floor(imgHeight / rows)
+
+        // 设置canvas尺寸为单个面板尺寸
+        canvas.width = panelWidth
+        canvas.height = panelHeight
+
+        const splitImages: string[] = []
+
+        // 按顺序提取所有面板（从左到右、从上到下）
+        for (let row = 0; row < rows; row++) {
+          for (let col = 0; col < cols; col++) {
+            // 计算源图像的裁剪位置
+            const sx = col * panelWidth
+            const sy = row * panelHeight
+
+            // 清空canvas
+            ctx.clearRect(0, 0, panelWidth, panelHeight)
+
+            // 绘制裁剪的面板
+            ctx.drawImage(
+              img,
+              sx, sy, panelWidth, panelHeight,  // 源图像裁剪区域
+              0, 0, panelWidth, panelHeight     // 目标canvas区域
+            )
+
+            // 转换为base64
+            const panelBase64 = canvas.toDataURL('image/png')
+            splitImages.push(panelBase64)
+          }
+        }
+
+        if (splitImages.length !== total) {
+          reject(new Error(`图像拆分数量异常，期望${total}张，实际得到${splitImages.length}张`))
+          return
+        }
+
+        resolve(splitImages)
+      } catch (error) {
+        reject(error)
+      }
+    }
+
+    img.onerror = () => {
+      reject(new Error('图像加载失败'))
+    }
+
+    // 处理base64格式
+    const base64Data = base64Image.startsWith('data:')
+      ? base64Image
+      : `data:image/png;base64,${base64Image}`
+
+    img.src = base64Data
+  })
+}
+
+// 保留旧函数名作为兼容（九宫格专用）
+export const splitNineGridImage = async (base64Image: string): Promise<string[]> => {
+  return splitGridImage(base64Image, GRID_LAYOUTS[3]) // 3×3 布局
+}
+
+/**
+ * 宫格分镜生成主函数（支持任意行列布局）
+ */
+export const generateGridStoryboard = async (
+  shots: GridShotInfo[],
+  layout: GridLayout,
+  artStyle: { id?: string; name?: string; promptSuffix?: string },
+  model: string = 'gemini-2.5-flash-image',
+  onProgress?: (stage: 'generating' | 'splitting' | 'complete', progress?: number) => void
+): Promise<string[]> => {
+  try {
+    // 阶段1：生成宫格图像
+    onProgress?.('generating', 0)
+
+    const prompt = generateGridPrompt(shots, layout, artStyle)
+
+    // 收集所有参考图（优先人物图，确保人物一致性）
+    const characterImages = new Set<string>() // 使用 Set 去重
+    const sceneImages = new Set<string>()
+
+    shots.forEach(info => {
+      // 收集人物参考图（优先级高）
+      info.characters.forEach((char: any) => {
+        if (char.image) {
+          characterImages.add(char.image)
+        }
+      })
+      // 收集场景参考图
+      if (info.scene?.image) {
+        sceneImages.add(info.scene.image)
+      }
+    })
+
+    // 组合参考图：优先人物，然后场景，最多10张避免超限
+    const referenceImages: string[] = [
+      ...Array.from(characterImages), // 所有人物参考图
+      ...Array.from(sceneImages)      // 场景参考图
+    ].slice(0, 10) // 增加到10张参考图限制
+
+    // 调用生成接口
+    const result = await generateImageFromText(
+      prompt,
+      model,
+      referenceImages,
+      { aspectRatio: layout.aspectRatio || '1:1' } // 使用布局推荐的宽高比
+    )
+
+    if (!result || result.length === 0) {
+      throw new Error('AI生成失败，未返回图像')
+    }
+
+    onProgress?.('generating', 100)
+
+    // 阶段2：拆分宫格图像
+    onProgress?.('splitting', 0)
+
+    const gridImage = result[0]
+    const splitImages = await splitGridImage(gridImage, layout)
+
+    if (splitImages.length !== layout.total) {
+      throw new Error(`图像拆分异常，期望${layout.total}张图片，实际得到${splitImages.length}张`)
+    }
+
+    onProgress?.('splitting', 100)
+    onProgress?.('complete')
+
+    return splitImages
+
+  } catch (error) {
+    console.error(`${layout.name}生成失败:`, error)
+    throw error
+  }
+}
+
+// 保留旧函数名作为兼容（九宫格专用）
+export const generateNineGridStoryboard = async (
+  nineShots: GridShotInfo[],
+  artStyle: { id?: string; name?: string; promptSuffix?: string },
+  model: string = 'gemini-2.5-flash-image',
+  onProgress?: (stage: 'generating' | 'splitting' | 'complete', progress?: number) => void
+): Promise<string[]> => {
+  return generateGridStoryboard(nineShots, GRID_LAYOUTS[3], artStyle, model, onProgress)
 }
 
 
