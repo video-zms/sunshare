@@ -252,7 +252,6 @@ const dragOverlayClass = computed(() => {
         class="w-full h-full object-cover"
         @error="handleVideoError"
         @loadeddata="handleVideoLoad"
-        muted
         preload="metadata"
       />
       

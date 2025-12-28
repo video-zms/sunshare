@@ -121,7 +121,6 @@ onUnmounted(() => {
           class="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl animate-in fade-in duration-300 bg-[#0a0a0c]"
           controls
           autoplay
-          muted
           loop
           playsinline
           preload="auto"
